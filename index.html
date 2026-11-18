@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- Безпека: застосунок не має права нікуди відправляти дані -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; manifest-src 'self'; worker-src 'self'; form-action 'none'; base-uri 'none'; object-src 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#2f6f4f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Бюджет">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="styles.css">
+<title>Сімейний бюджет</title>
+</head>
+<body>
+<div id="lock" class="lock" hidden>
+  <form id="lockForm" class="lock-box" autocomplete="off">
+    <div class="lock-icon">🔒</div>
+    <h2>Введіть PIN-код</h2>
+    <input id="lockPin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" aria-label="PIN-код">
+    <button class="btn primary" type="submit">Відкрити</button>
+    <p class="hint">Забули PIN? Його не можна відновити. Допоможе лише видалення даних сайту в налаштуваннях браузера і відновлення з резервної копії.</p>
+  </form>
+</div>
+
+<header class="top">
+  <h1 id="title">Сімейний бюджет</h1>
+  <div id="monthBar" class="month-bar">
+    <button type="button" class="icon-btn" data-act="month-prev" aria-label="Попередній місяць">‹</button>
+    <span id="monthLabel"></span>
+    <button type="button" class="icon-btn" data-act="month-next" aria-label="Наступний місяць">›</button>
+  </div>
+</header>
+
+<main id="view" tabindex="-1"></main>
+
+<nav class="tabs" aria-label="Розділи">
+  <button type="button" data-tab="home"><span>🏠</span>Головна</button>
+  <button type="button" data-tab="add"><span>➕</span>Додати</button>
+  <button type="button" data-tab="history"><span>📋</span>Історія</button>
+  <button type="button" data-tab="goals"><span>🎯</span>Цілі</button>
+  <button type="button" data-tab="settings"><span>⚙️</span>Налаштування</button>
+</nav>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<input id="restoreFile" type="file" accept=".json,application/json" hidden>
+
+<script src="xlsx-lite.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

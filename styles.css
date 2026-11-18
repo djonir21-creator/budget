@@ -1,0 +1,239 @@
+:root {
+  --bg: #f4f6f3;
+  --panel: #ffffff;
+  --text: #1d2420;
+  --muted: #66716b;
+  --line: #e2e7e3;
+  --accent: #2f6f4f;
+  --accent-2: #e6f1ea;
+  --crit: #d64545;
+  --imp: #e0a400;
+  --save: #2e9e5b;
+  --sav: #3a78c2;
+  --in: #2e9e5b;
+  --out: #c4473a;
+  --radius: 14px;
+  --tabs-h: 64px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121614;
+    --panel: #1b211e;
+    --text: #e8ece9;
+    --muted: #9aa59f;
+    --line: #2b332f;
+    --accent: #5fb98a;
+    --accent-2: #1f3329;
+    --crit: #ef6b6b;
+    --imp: #f0c040;
+    --save: #4cc27c;
+    --sav: #6aa2e6;
+    --in: #4cc27c;
+    --out: #ef7a6d;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  padding-bottom: calc(var(--tabs-h) + env(safe-area-inset-bottom) + 16px);
+  -webkit-tap-highlight-color: transparent;
+}
+body.locked > :not(.lock) { visibility: hidden; }
+
+/* Верхня панель */
+.top {
+  position: sticky; top: 0; z-index: 5;
+  background: var(--accent); color: #fff;
+  padding: calc(env(safe-area-inset-top) + 10px) 16px 10px;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+}
+.top h1 { font-size: 19px; margin: 0; font-weight: 700; }
+.month-bar { display: flex; align-items: center; gap: 4px; font-weight: 600; }
+.month-bar span { min-width: 118px; text-align: center; }
+.icon-btn {
+  border: 0; background: rgba(255,255,255,.18); color: inherit; font-size: 22px; line-height: 1;
+  width: 40px; height: 40px; border-radius: 10px; cursor: pointer;
+}
+.icon-btn.small { background: transparent; color: var(--muted); font-size: 16px; width: 34px; height: 34px; flex: none; }
+
+main { padding: 12px 12px 0; max-width: 680px; margin: 0 auto; outline: none; }
+
+/* Нижнє меню */
+.tabs {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+  display: grid; grid-template-columns: repeat(5, 1fr);
+  background: var(--panel); border-top: 1px solid var(--line);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.tabs button {
+  border: 0; background: none; color: var(--muted); font: inherit; font-size: 11px;
+  height: var(--tabs-h); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; cursor: pointer;
+}
+.tabs button span { font-size: 22px; filter: grayscale(1); opacity: .75; }
+.tabs button.active { color: var(--accent); font-weight: 700; }
+.tabs button.active span { filter: none; opacity: 1; }
+
+/* Панелі */
+.panel {
+  background: var(--panel); border-radius: var(--radius); padding: 14px 14px;
+  margin-bottom: 12px; box-shadow: 0 1px 2px rgba(0,0,0,.05);
+}
+.panel h2 { font-size: 17px; margin: 0 0 10px; }
+.muted { color: var(--muted); }
+.intro { color: var(--muted); margin: 4px 4px 12px; }
+.note { font-size: 14px; color: var(--muted); }
+.warn-note { background: var(--accent-2); padding: 10px 12px; border-radius: 10px; color: var(--text); }
+.welcome ol { padding-left: 20px; margin: 8px 0 14px; }
+.welcome li { margin-bottom: 4px; }
+.pos { color: var(--in); }
+.neg { color: var(--out); }
+.sav { color: var(--sav); }
+
+/* Картки підсумку */
+.cards { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+.card { background: var(--panel); border-radius: var(--radius); padding: 12px; border-left: 5px solid var(--line); box-shadow: 0 1px 2px rgba(0,0,0,.05); min-width: 0; }
+.card-t { font-size: 13px; color: var(--muted); }
+.card-v { font-size: 21px; font-weight: 700; margin: 2px 0; overflow-wrap: anywhere; }
+.card-s { font-size: 12px; color: var(--muted); }
+.c-in { border-color: var(--in); }
+.c-out { border-color: var(--out); }
+.c-sav { border-color: var(--sav); }
+.c-left { border-color: var(--accent); }
+.c-neg { border-color: var(--crit); }
+.c-neg .card-v { color: var(--crit); }
+
+/* Кольорові позначки */
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; background: var(--muted); flex: none; vertical-align: middle; }
+.dot.p-crit, .fill.p-crit, .seg.p-crit { background: var(--crit); }
+.dot.p-imp, .fill.p-imp, .seg.p-imp { background: var(--imp); }
+.dot.p-save, .fill.p-save, .seg.p-save { background: var(--save); }
+.dot.p-in { background: var(--in); }
+.dot.p-sav, .fill.p-sav { background: var(--sav); }
+
+/* Графік */
+.bar-row { margin-bottom: 12px; }
+.bar-head { display: flex; justify-content: space-between; gap: 8px; font-size: 15px; margin-bottom: 4px; }
+.bar-head span:first-child { display: flex; align-items: center; min-width: 0; }
+.bar-head span:last-child { white-space: nowrap; font-weight: 600; }
+.bar-head small { color: var(--muted); font-weight: 400; }
+.bar { position: relative; height: 10px; background: var(--line); border-radius: 6px; overflow: visible; }
+.bar.big { height: 14px; margin: 8px 0 6px; }
+.fill { height: 100%; border-radius: 6px; width: 0; transition: width .4s; }
+.limit-mark { position: absolute; top: -4px; bottom: -4px; width: 3px; margin-left: -1px; background: var(--text); border-radius: 2px; }
+.bar-sub { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; color: var(--muted); margin-top: 6px; }
+.legend span { display: flex; align-items: center; }
+.stack { display: flex; height: 18px; border-radius: 9px; overflow: hidden; background: var(--line); }
+.seg { height: 100%; }
+.pri-list, .warn, .tips { list-style: none; padding: 0; margin: 10px 0 0; }
+.pri-list li { margin-bottom: 4px; }
+.warn li, .tips li { padding: 9px 11px; border-radius: 10px; margin-bottom: 8px; background: var(--accent-2); font-size: 15px; }
+.warn li.w-bad { background: color-mix(in srgb, var(--crit) 14%, var(--panel)); }
+.warn li.w-mid { background: color-mix(in srgb, var(--imp) 18%, var(--panel)); }
+
+/* Форми */
+.form label { display: block; font-weight: 600; font-size: 15px; margin-top: 12px; }
+.form label:first-child { margin-top: 0; }
+input[type=text], input[type=date], input[type=password], select {
+  display: block; width: 100%; margin-top: 6px; font: inherit; font-size: 17px; /* ≥16px: iPhone не збільшує екран */
+  padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--text);
+  min-height: 46px; -webkit-appearance: none; appearance: none;
+}
+select { background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%; background-size: 5px 5px; background-repeat: no-repeat; padding-right: 32px; }
+input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.hint { font-size: 13px; color: var(--muted); margin: 5px 2px 0; font-weight: 400; }
+.edit-note { background: var(--accent-2); padding: 8px 10px; border-radius: 10px; margin: 0 0 12px; }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  font: inherit; font-weight: 600; font-size: 16px; padding: 11px 16px; min-height: 46px;
+  border-radius: 12px; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+  cursor: pointer; text-decoration: none; margin-top: 12px;
+}
+.btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.btn.danger { color: var(--crit); border-color: color-mix(in srgb, var(--crit) 40%, var(--line)); }
+.btn.big { width: 100%; font-size: 18px; min-height: 52px; }
+.form > .btn { width: 100%; }
+.btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn-row .btn { flex: 1 1 auto; }
+.small-btn { width: 100%; }
+
+.seg-ctl { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; background: var(--bg); padding: 4px; border-radius: 12px; margin-bottom: 4px; }
+.seg-ctl button { border: 0; background: none; font: inherit; font-weight: 700; font-size: 16px; padding: 10px; border-radius: 9px; color: var(--muted); cursor: pointer; }
+.seg-ctl button.on { background: var(--panel); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+.seg-ctl button.on.out { color: var(--out); }
+.seg-ctl button.on.in { color: var(--in); }
+
+/* Список записів */
+.tx-list { list-style: none; padding: 0; margin: 0; }
+.tx { display: flex; align-items: center; gap: 4px; padding: 10px 2px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.tx:last-child { border-bottom: 0; }
+.tx-main { flex: 1; min-width: 0; }
+.tx-cat { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tx-sub { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tx-sum { font-weight: 700; white-space: nowrap; }
+.day { font-size: 13px; font-weight: 700; color: var(--muted); padding: 12px 2px 2px; }
+.hist-total { font-size: 14px; color: var(--muted); }
+
+/* Цілі */
+.goal-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.goal-head h2 { margin: 0; }
+.badge { font-size: 12px; background: var(--accent-2); padding: 3px 8px; border-radius: 20px; white-space: nowrap; }
+.goal-nums { margin-top: 8px; font-size: 16px; }
+.goal-sub { font-size: 14px; color: var(--muted); margin-top: 4px; }
+.goal-sub.pos { color: var(--in); font-weight: 700; }
+.goal-sub.neg { color: var(--out); }
+.sub-form { border-top: 1px dashed var(--line); margin-top: 12px; padding-top: 12px; }
+
+/* Категорії */
+.cats { margin-top: 10px; }
+.cat { border: 1px solid var(--line); border-radius: 12px; margin-bottom: 8px; background: var(--bg); }
+.cat summary { padding: 12px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 2px; list-style: none; }
+.cat summary::-webkit-details-marker { display: none; }
+.cat summary::after { content: '›'; margin-left: auto; color: var(--muted); font-size: 20px; transition: transform .2s; }
+.cat[open] summary::after { transform: rotate(90deg); }
+.cat summary small { margin-left: 6px; font-weight: 400; }
+.cat-body { padding: 0 12px 12px; }
+.cat-body label { display: block; font-weight: 600; font-size: 14px; margin-top: 8px; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.subs-title { font-size: 14px; font-weight: 700; margin: 12px 0 4px; }
+.sub-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.sub-row input { margin-top: 0; flex: 1 1 50%; min-width: 0; }
+.sub-row select { margin-top: 0; flex: 0 1 44%; min-width: 0; font-size: 15px; }
+.pri-sel { font-size: 15px; }
+.pri-sel.p-crit { border-left: 5px solid var(--crit); }
+.pri-sel.p-imp { border-left: 5px solid var(--imp); }
+.pri-sel.p-save { border-left: 5px solid var(--save); }
+.inline-add { display: flex; gap: 6px; margin-top: 8px; }
+.inline-add input { margin-top: 0; flex: 1; min-width: 0; }
+.inline-add .btn { margin-top: 0; flex: none; }
+
+/* Сповіщення */
+.toast {
+  position: fixed; left: 50%; bottom: calc(var(--tabs-h) + env(safe-area-inset-bottom) + 14px); transform: translate(-50%, 20px);
+  background: #1d2420; color: #fff; padding: 11px 16px; border-radius: 12px; font-size: 15px; max-width: calc(100% - 32px);
+  opacity: 0; pointer-events: none; transition: all .25s; z-index: 20; text-align: center;
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+.toast.bad { background: var(--crit); }
+
+/* Блокування PIN */
+.lock { position: fixed; inset: 0; z-index: 50; background: var(--bg); display: flex; align-items: center; justify-content: center; padding: 24px; }
+.lock[hidden] { display: none; }
+.lock-box { background: var(--panel); border-radius: var(--radius); padding: 24px; width: 100%; max-width: 340px; text-align: center; }
+.lock-icon { font-size: 40px; }
+.lock-box input { text-align: center; font-size: 26px; letter-spacing: 8px; }
+.lock-box .btn { width: 100%; }
+
+@media (min-width: 560px) {
+  .cards { grid-template-columns: repeat(4, 1fr); }
+}
