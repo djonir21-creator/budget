@@ -353,3 +353,14 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
 .imp-foot .btn[disabled] { opacity: .5; }
 .imp-foot .hint { text-align: center; }
 .imp-bar .imp-cancel { margin-left: auto; }
+
+/* Рахунки */
+.acc-list { list-style: none; padding: 0; margin: 0; }
+.acc-list li { display: flex; justify-content: space-between; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 16px; }
+.acc-list li.acc-total { border-bottom: 0; font-weight: 700; }
+.acc-tr summary { cursor: pointer; color: var(--muted); font-size: 14px; margin-top: 10px; }
+.acc-row { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+.acc-row input { margin-top: 0; min-width: 0; }
+.acc-row input:first-child { flex: 1 1 58%; }
+.acc-row input:nth-child(2) { flex: 1 1 38%; }
+.imp-acc { display: block; font-weight: 600; font-size: 15px; margin-top: 12px; }
