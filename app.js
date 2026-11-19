@@ -23,7 +23,8 @@
     return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
   function pad(n) { return (n < 10 ? '0' : '') + n; }
-  function today() { var d = new Date(); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+  function localDay(ts) { var d = ts ? new Date(ts) : new Date(); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+  function today() { return localDay(); }
   function curMonth() { return today().slice(0, 7); }
   function shiftMonth(m, k) {
     var y = +m.slice(0, 4), mo = +m.slice(5, 7) - 1 + k;
@@ -80,7 +81,7 @@
     add('Інше', 'expense', 'important', []);
     return {
       version: 1,
-      settings: { eurRate: 0, pinHash: '', pinSalt: '' },
+      settings: { eurRate: 0, pinHash: '', pinSalt: '', remindDays: 2, lastBackup: 0 },
       categories: cats,
       transactions: [],
       goals: [
@@ -96,6 +97,8 @@
 
   // Старі резервні копії не мають розділу «План» — додаємо порожній
   function normalize(d) {
+    if (d.settings.remindDays === undefined) d.settings.remindDays = 2;
+    if (!d.settings.lastBackup) d.settings.lastBackup = 0;
     if (!Array.isArray(d.recurring)) d.recurring = [];
     if (!d.plans || typeof d.plans !== 'object' || Array.isArray(d.plans)) d.plans = {};
     Object.keys(d.plans).forEach(function (m) {
@@ -127,12 +130,12 @@
   }
 
   function save() {
-    try { localStorage.setItem(KEY, JSON.stringify(data)); return true; }
+    try { localStorage.setItem(KEY, JSON.stringify(data)); syncReminderSchedule(); return true; }
     catch (e) { toast('Не вдалося зберегти! Можливо, закінчилась пам\'ять телефону.', true); return false; }
   }
 
   var data = load();
-  var ui = { tab: 'home', month: curMonth(), addType: 'expense', editId: null, histCat: '', goalForm: null, newGoal: false, catType: 'expense', planMonth: shiftMonth(curMonth(), 1), planForm: null };
+  var ui = { tab: 'home', month: curMonth(), addType: 'expense', editId: null, histCat: '', goalForm: null, newGoal: false, catType: 'expense', planMonth: shiftMonth(curMonth(), 1), planForm: null, cmpSame: true };
 
   // Просимо браузер не видаляти наші дані автоматично
   if (navigator.storage && navigator.storage.persist) { navigator.storage.persist().catch(function () { }); }
@@ -161,10 +164,12 @@
   }
 
   // ---------------- Розрахунки ----------------
-  function summary(month) {
+  // maxDay — рахувати лише до цього числа місяця (для чесного порівняння з поточним місяцем)
+  function summary(month, maxDay) {
     var s = { income: 0, expense: 0, saved: 0, byTop: {}, byLeaf: {}, byPri: { critical: 0, important: 0, save: 0 }, count: 0 };
     data.transactions.forEach(function (t) {
       if (t.date.slice(0, 7) !== month) return;
+      if (maxDay && +t.date.slice(8, 10) > maxDay) return;
       s.count++;
       if (t.type === 'income') { s.income += t.amount; return; }
       s.expense += t.amount;
@@ -176,7 +181,7 @@
       s.byPri[p] += t.amount;
     });
     data.contributions.forEach(function (c) {
-      if (!c.initial && c.date.slice(0, 7) === month) s.saved += (c.uah || 0);
+      if (!c.initial && c.date.slice(0, 7) === month && !(maxDay && +c.date.slice(8, 10) > maxDay)) s.saved += (c.uah || 0);
     });
     s.left = s.income - s.expense - s.saved;
     return s;
@@ -229,6 +234,271 @@
 
   function hint(text) { return '<p class="hint">' + text + '</p>'; }
 
+
+  // ---------------- Нагадування про платежі ----------------
+  // Кожен платіж із «Плану» може мати число місяця (day). За кілька днів до нього застосунок нагадує.
+  function dayDiff(a, b) { // скільки днів від дати a до дати b (рядки РРРР-ММ-ДД)
+    var da = new Date(+a.slice(0, 4), +a.slice(5, 7) - 1, +a.slice(8, 10)), db = new Date(+b.slice(0, 4), +b.slice(5, 7) - 1, +b.slice(8, 10));
+    return Math.round((db - da) / 86400000);
+  }
+  function dueDate(m, day) { return m + '-' + pad(Math.min(day, daysIn(m))); }
+
+  // Усі неоплачені платежі з датою в цьому і наступному місяці
+  function upcomingPayments() {
+    var out = [], m0 = curMonth();
+    [m0, shiftMonth(m0, 1)].forEach(function (m) {
+      var p = getPlan(m);
+      data.recurring.concat(p.items).forEach(function (x) {
+        if (!x.day || p.paid[x.id] !== undefined) return;
+        out.push({ id: x.id, month: m, name: x.name, amount: x.amount, due: dueDate(m, x.day) });
+      });
+    });
+    return out.sort(function (a, b) { return a.due < b.due ? -1 : a.due > b.due ? 1 : 0; });
+  }
+
+  // Що треба показати зараз: прострочене (у цьому місяці) і те, що настане протягом remindDays днів
+  function duePayments() {
+    var rd = data.settings.remindDays, t = today(), m0 = curMonth();
+    if (rd < 0) return [];
+    return upcomingPayments().filter(function (x) {
+      var d = dayDiff(t, x.due);
+      x.diff = d;
+      return d <= rd && (d >= 0 || x.month === m0);
+    });
+  }
+
+  function whenText(d) {
+    if (d < 0) return 'прострочено на ' + (-d) + ' дн.';
+    if (d === 0) return 'сьогодні';
+    if (d === 1) return 'завтра';
+    return 'через ' + d + ' дн.';
+  }
+
+  function remindPanel() {
+    var list = duePayments();
+    if (!list.length) return '';
+    return '<section class="panel remind"><h2>🔔 Скоро треба оплатити</h2><ul class="tx-list plan-list">' + list.map(function (x) {
+      return '<li class="tx">' +
+        '<button class="check" data-act="remind-pay" data-id="' + x.id + '" data-month="' + x.month + '" aria-label="Позначити як оплачене"></button>' +
+        '<div class="tx-main"><div class="tx-cat">' + esc(x.name) + '</div>' +
+        '<div class="tx-sub ' + (x.diff < 0 ? 'neg' : x.diff <= 1 ? 'due-soon' : '') + '">' + fmtDate(x.due) + ' · ' + whenText(x.diff) + '</div></div>' +
+        '<div class="tx-sum">' + money0(x.amount) + '</div></li>';
+    }).join('') + '</ul>' + hint('Оплатили — натисніть кружечок ○. Список платежів і дати змінюються у «📝 Плані».') + '</section>';
+  }
+
+  // Системні сповіщення (коли дозволено). Кожен платіж — не частіше одного разу на день.
+  // Що вже показано, пишемо в той самий кеш, що й sw.js, щоб не нагадувати двічі.
+  var REMIND_CACHE = 'family-budget-reminders';
+  function notifySupported() { return 'Notification' in window && 'serviceWorker' in navigator && 'caches' in window && window.isSecureContext; }
+  function notifyText(x) {
+    // Якщо стоїть PIN — не показуємо суми на заблокованому екрані
+    return data.settings.pinHash ? 'Платіж ' + whenText(x.diff) + '. Відкрийте застосунок, щоб подивитись.'
+      : x.name + ' — ' + money0(x.amount) + ', ' + whenText(x.diff);
+  }
+  function resetShown() { if ('caches' in window) caches.open(REMIND_CACHE).then(function (c) { return c.delete('shown.json'); }).catch(function () { }); }
+  function checkNotifications() {
+    if (!notifySupported() || Notification.permission !== 'granted') return;
+    var list = duePayments(); if (!list.length) return;
+    var t = today(), cache;
+    caches.open(REMIND_CACHE).then(function (c) { cache = c; return c.match('shown.json'); })
+      .then(function (r) { return r ? r.json() : {}; })
+      .then(function (shown) {
+        if (shown.date !== t) shown = { date: t, keys: [] };
+        var fresh = list.filter(function (x) { return shown.keys.indexOf(x.id + x.due) < 0; });
+        if (!fresh.length) return;
+        return navigator.serviceWorker.ready.then(function (reg) {
+          fresh.forEach(function (x) {
+            reg.showNotification(data.settings.pinHash ? '🔔 Скоро оплата' : '🔔 ' + x.name, {
+              body: notifyText(x), tag: 'pay-' + x.id + x.due, icon: 'icons/icon-192.png', badge: 'icons/icon-192.png'
+            });
+            shown.keys.push(x.id + x.due);
+          });
+          return cache.put('shown.json', new Response(JSON.stringify(shown)));
+        });
+      }).catch(function () { });
+  }
+
+  // Передаємо розклад платежів службовому файлу (sw.js), щоб на Android він міг нагадати навіть коли застосунок закритий.
+  // Дані лишаються на телефоні (у пам'яті браузера), нікуди не надсилаються.
+  function syncReminderSchedule() {
+    if (!('caches' in window) || !window.isSecureContext) return;
+    var list = upcomingPayments().map(function (x) {
+      return { key: x.id + x.due, due: x.due, title: data.settings.pinHash ? '🔔 Скоро оплата' : '🔔 ' + x.name,
+        name: data.settings.pinHash ? '' : x.name + ' — ' + money0(x.amount) };
+    });
+    var body = JSON.stringify({ remindDays: data.settings.remindDays, items: list });
+    caches.open(REMIND_CACHE).then(function (c) {
+      return c.put('reminders.json', new Response(body, { headers: { 'Content-Type': 'application/json' } }));
+    }).catch(function () { });
+  }
+
+  function registerBackgroundCheck() {
+    if (!('serviceWorker' in navigator) || !window.isSecureContext) return;
+    navigator.serviceWorker.ready.then(function (reg) {
+      if (!reg.periodicSync) return;
+      if (data.settings.remindDays < 0 || !('Notification' in window) || Notification.permission !== 'granted') {
+        reg.periodicSync.unregister('payment-reminders').catch(function () { });
+        return;
+      }
+      return reg.periodicSync.register('payment-reminders', { minInterval: 12 * 60 * 60 * 1000 });
+    }).catch(function () { });
+  }
+
+  function enableNotifications() {
+    if (!notifySupported()) { toast('Цей браузер не вміє показувати сповіщення. Нагадування будуть на Головній.', true); return; }
+    Notification.requestPermission().then(function (perm) {
+      if (perm === 'granted') {
+        if (data.settings.remindDays < 0) { data.settings.remindDays = 2; save(); }
+        toast('Сповіщення увімкнено 🔔');
+        resetShown();
+        syncReminderSchedule(); registerBackgroundCheck(); checkNotifications();
+      } else toast('Сповіщення заборонено. Увімкнути можна в налаштуваннях браузера.', true);
+      render();
+    });
+  }
+
+  // Файл календаря (.ics): телефонний календар нагадує надійно, навіть без цього застосунку
+  function icsEsc(t) { return String(t).replace(/\\/g, '\\\\').replace(/;/g, '\;').replace(/,/g, '\\,').replace(/\n/g, ' '); }
+  function exportCalendar() {
+    var rd = Math.max(0, data.settings.remindDays), m0 = curMonth(), now = new Date();
+    var st = now.getUTCFullYear() + pad(now.getUTCMonth() + 1) + pad(now.getUTCDate()) + 'T' + pad(now.getUTCHours()) + pad(now.getUTCMinutes()) + '00Z';
+    var ev = [];
+    function alarm() { // о 9:00 за rd днів до платежу
+      return ['BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:Нагадування про платіж', 'TRIGGER:' + (rd ? '-PT' + (rd * 24 - 9) + 'H' : 'PT9H'), 'END:VALARM'];
+    }
+    function event(uidv, date, title, rrule) {
+      var d = date.replace(/-/g, ''), next = new Date(+date.slice(0, 4), +date.slice(5, 7) - 1, +date.slice(8, 10) + 1);
+      var e = ['BEGIN:VEVENT', 'UID:' + uidv + '@family-budget', 'DTSTAMP:' + st, 'DTSTART;VALUE=DATE:' + d,
+        'DTEND;VALUE=DATE:' + next.getFullYear() + pad(next.getMonth() + 1) + pad(next.getDate()), 'SUMMARY:' + icsEsc(title)];
+      if (rrule) e.push(rrule);
+      ev.push(e.concat(alarm(), ['END:VEVENT']).join('\r\n'));
+    }
+    data.recurring.forEach(function (r) {
+      if (!r.day) return;
+      var last = r.day > 28;
+      event(r.id, dueDate(m0, r.day), '💳 ' + r.name + ' — ' + money0(r.amount), 'RRULE:FREQ=MONTHLY;BYMONTHDAY=' + (last ? -1 : r.day));
+    });
+    Object.keys(data.plans).forEach(function (m) {
+      if (m < m0) return;
+      data.plans[m].items.forEach(function (it) {
+        if (!it.day || data.plans[m].paid[it.id] !== undefined) return;
+        event(it.id + m, dueDate(m, it.day), '🛒 ' + it.name + ' — ' + money0(it.amount));
+      });
+    });
+    if (!ev.length) { toast('Спершу вкажіть «Число оплати» хоча б для одного платежу в «📝 Плані»', true); return; }
+    var ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Family Budget//UA', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH'].concat(ev, ['END:VCALENDAR']).join('\r\n');
+    deliver(new Blob([ics], { type: 'text/calendar' }), 'platezhi_' + today() + '.ics');
+  }
+
+  // ---------------- Ліміти ----------------
+  function limitClass(pct) { return pct >= 100 ? 'p-crit' : pct >= 80 ? 'p-imp' : 'p-save'; }
+
+  function limitsPanel(s) {
+    var list = tops('expense').filter(function (t) { return t.limit > 0; });
+    if (!list.length) {
+      if (!s.expense) return '';
+      return '<section class="panel"><h2>🚧 Ліміти</h2><p class="muted">Задайте, скільки максимум витрачати на місяць, наприклад «Їжа — 8000 ₴». Тут з\'являться смужки, які жовтіють біля межі.</p>' +
+        '<button class="btn small-btn" data-act="go-limits">Задати ліміти</button></section>';
+    }
+    var isCur = ui.month === curMonth(), dNow = +today().slice(8, 10), dAll = daysIn(ui.month);
+    var rows = list.map(function (t) {
+      var spent = s.byTop[t.id] || 0, pct = spent / t.limit * 100, left = t.limit - spent, sub;
+      if (pct >= 100) sub = '<span class="neg">🔴 Перевищено на ' + money0(-left) + '</span>';
+      else {
+        sub = 'Лишилось ' + money0(left);
+        if (isCur) {
+          var daysLeft = dAll - dNow + 1, forecast = spent / dNow * dAll;
+          sub += ' · ≈ ' + money0(left / daysLeft) + ' на день';
+          if (pct >= 80) sub = '🟡 ' + sub;
+          else if (spent > 0 && dNow >= 5 && forecast > t.limit * 1.05) sub += '<br><span class="due-soon">За таким темпом вийде ~' + money0(forecast) + ' — більше за ліміт</span>';
+        } else if (pct >= 80) sub = '🟡 ' + sub;
+      }
+      return { pct: pct, html: '<div class="bar-row"><div class="bar-head"><span><i class="dot ' + PRI[t.priority].cls + '"></i>' + esc(t.name) + '</span>' +
+        '<span class="' + (pct >= 100 ? 'neg' : '') + '">' + money0(spent) + ' <small>з ' + money0(t.limit) + '</small></span></div>' +
+        '<div class="bar"><div class="fill ' + limitClass(pct) + '" data-w="' + pct + '"></div></div>' +
+        '<div class="bar-sub">' + Math.round(pct) + '% · ' + sub + '</div></div>' };
+    }).sort(function (a, b) { return b.pct - a.pct; });
+    return '<section class="panel"><h2>🚧 Ліміти на місяць</h2><div class="bars">' + rows.map(function (r) { return r.html; }).join('') + '</div>' +
+      '<div class="legend"><span><i class="dot p-save"></i>до 80%</span><span><i class="dot p-imp"></i>80–100%</span><span><i class="dot p-crit"></i>понад ліміт</span></div>' +
+      '<button class="btn small-btn" data-act="go-limits">Змінити ліміти</button></section>';
+  }
+
+  // Після внесення витрати: попередити, якщо категорія підійшла до ліміту
+  function limitToast(t) {
+    if (t.type !== 'expense') return '';
+    var top = topOf(catById(t.categoryId)); if (!top || !top.limit) return '';
+    var spent = summary(t.date.slice(0, 7)).byTop[top.id] || 0, pct = spent / top.limit * 100, before = (spent - t.amount) / top.limit * 100;
+    if (pct >= 100 && before < 100) return '🔴 Ліміт «' + top.name + '» перевищено!';
+    if (pct >= 100) return '🔴 «' + top.name + '»: вже ' + Math.round(pct) + '% ліміту';
+    if (pct >= 80) return '🟡 «' + top.name + '»: використано ' + Math.round(pct) + '% ліміту';
+    return '';
+  }
+
+  // ---------------- Порівняння з минулим місяцем ----------------
+  function comparePanel(s) {
+    var prev = shiftMonth(ui.month, -1);
+    if (!monthHasData(prev) || !s.count) return '';
+    var isCur = ui.month === curMonth(), dNow = +today().slice(8, 10);
+    var same = isCur && ui.cmpSame && dNow < daysIn(ui.month);
+    var p = summary(prev, same ? dNow : 0);
+    var prevName = MONTHS[+prev.slice(5, 7) - 1].toLowerCase();
+    var ids = {};
+    Object.keys(s.byTop).concat(Object.keys(p.byTop)).forEach(function (id) { ids[id] = 1; });
+    var rows = Object.keys(ids).map(function (id) { return { id: id, a: s.byTop[id] || 0, b: p.byTop[id] || 0 }; })
+      .sort(function (x, y) { return Math.max(y.a, y.b) - Math.max(x.a, x.b); });
+    var max = rows.reduce(function (m, r) { return Math.max(m, r.a, r.b); }, 0) || 1;
+    function delta(a, b, goodWhenUp) {
+      var d = a - b;
+      if (Math.abs(d) < 1) return '<span class="chg">= без змін</span>';
+      var up = d > 0, good = goodWhenUp ? up : !up;
+      return '<span class="chg ' + (good ? 'pos' : 'neg') + '">' + (up ? '▲ +' : '▼ −') + money0(Math.abs(d)) + (b > 0 ? ' (' + (up ? '+' : '−') + Math.round(Math.abs(d) / b * 100) + '%)' : '') + '</span>';
+    }
+    var html = '<section class="panel"><h2>📈 Порівняння з минулим місяцем</h2>';
+    if (isCur && dNow < daysIn(ui.month)) {
+      html += '<div class="seg-ctl small-seg" role="group" aria-label="Як порівнювати">' +
+        '<button type="button" data-act="cmp-mode" data-same="1" class="' + (ui.cmpSame ? 'on' : '') + '">За ті самі ' + dNow + ' дн.</button>' +
+        '<button type="button" data-act="cmp-mode" data-same="0" class="' + (!ui.cmpSame ? 'on' : '') + '">Весь ' + prevName + '</button></div>' +
+        hint(ui.cmpSame ? 'Порівнюємо з першими ' + dNow + ' днями минулого місяця — так чесно, бо цей місяць ще не закінчився.' : 'Порівнюємо з усім минулим місяцем. Цей місяць ще триває, тож цифри ще зростуть.');
+    }
+    html += '<div class="cmp-total"><div>Витрати: <b>' + money0(s.expense) + '</b> проти ' + money0(p.expense) + ' ' + delta(s.expense, p.expense, false) + '</div>' +
+      '<div>Доходи: <b>' + money0(s.income) + '</b> проти ' + money0(p.income) + ' ' + delta(s.income, p.income, true) + '</div></div>';
+    html += '<div class="bars">' + rows.map(function (r) {
+      var c = catById(r.id);
+      return '<div class="bar-row cmp-row"><div class="bar-head"><span><i class="dot ' + (c ? PRI[c.priority].cls : '') + '"></i>' + esc(c ? c.name : 'Без категорії') + '</span>' +
+        delta(r.a, r.b, false) + '</div>' +
+        '<div class="cmp-line"><span class="cmp-lbl">цей</span><div class="bar"><div class="fill cmp-now" data-w="' + (r.a / max * 100) + '"></div></div><span class="cmp-val">' + money0(r.a) + '</span></div>' +
+        '<div class="cmp-line"><span class="cmp-lbl">мин.</span><div class="bar"><div class="fill cmp-prev" data-w="' + (r.b / max * 100) + '"></div></div><span class="cmp-val">' + money0(r.b) + '</span></div></div>';
+    }).join('') + '</div>' +
+      '<div class="legend"><span><i class="dot cmp-now"></i>' + MONTHS[+ui.month.slice(5, 7) - 1] + '</span><span><i class="dot cmp-prev"></i>' + MONTHS[+prev.slice(5, 7) - 1] + '</span>' +
+      '<span>▲ червоне — витратили більше, ▼ зелене — менше</span></div></section>';
+    return html;
+  }
+
+  // ---------------- Резервна копія: нагадування ----------------
+  function backupAgeDays() { return data.settings.lastBackup ? Math.floor((Date.now() - data.settings.lastBackup) / 86400000) : -1; }
+  function backupNudge() {
+    if (data.transactions.length < 5) return '';
+    var age = backupAgeDays();
+    if (age >= 0 && age < 7) return '';
+    return '<section class="panel nudge"><h2>💾 Час зробити резервну копію</h2><p>' +
+      (age < 0 ? 'Ви ще жодного разу не зберігали копію.' : 'Остання копія була ' + age + ' дн. тому.') +
+      ' Якщо телефон загубиться чи зламається, без копії всі записи пропадуть.</p>' +
+      '<div class="btn-row">' + (canShareFiles() ? '<button class="btn primary" data-act="share-json">📤 Надіслати копію</button>' : '') +
+      '<button class="btn' + (canShareFiles() ? '' : ' primary') + '" data-act="export-json">💾 Зберегти файл</button></div>' +
+      hint(canShareFiles() ? '«Надіслати» — можна покласти файл на Google Диск, у Telegram «Збережене» або собі на пошту.' : 'Файл збережеться в «Завантаження». Скопіюйте його в надійне місце.') + '</section>';
+  }
+
+  // ---------------- Цілі: коли накопичу ----------------
+  function monthsBetween(a, b) { return (+b.slice(0, 4) - +a.slice(0, 4)) * 12 + (+b.slice(5, 7) - +a.slice(5, 7)); }
+  function goalPace(g) { // середньо відкладається на місяць (у валюті цілі) за останні до 3 місяців
+    var cs = data.contributions.filter(function (c) { return c.goalId === g.id && !c.initial; });
+    if (!cs.length) return 0;
+    var first = cs.reduce(function (m, c) { return c.date < m ? c.date : m; }, cs[0].date).slice(0, 7), cur = curMonth();
+    var n = Math.max(1, Math.min(3, monthsBetween(first, cur) + 1)), from = shiftMonth(cur, -(n - 1));
+    var sum = cs.reduce(function (q, c) { var m = c.date.slice(0, 7); return m >= from && m <= cur ? q + c.amount : q; }, 0);
+    return sum > 0 ? sum / n : 0;
+  }
+
   // ----- Головна -----
   function viewHome() {
     var s = summary(ui.month);
@@ -249,17 +519,9 @@
       card('Залишок', s.left, s.left < 0 ? 'c-neg' : 'c-left', s.left < 0 ? 'Витратили більше, ніж заробили' : 'Вільні гроші') +
       '</section>';
 
+    if (ui.month === curMonth()) html += remindPanel() + backupNudge();
     html += homePlanPanel();
-
-    // Ліміти
-    var warn = [];
-    tops('expense').forEach(function (t) {
-      if (!t.limit) return;
-      var spent = s.byTop[t.id] || 0, pct = spent / t.limit * 100;
-      if (pct >= 100) warn.push('<li class="w-bad">🔴 <b>' + esc(t.name) + '</b>: ліміт перевищено на ' + money0(spent - t.limit) + ' (' + Math.round(pct) + '%)</li>');
-      else if (pct >= 80) warn.push('<li class="w-mid">🟡 <b>' + esc(t.name) + '</b>: використано ' + Math.round(pct) + '% ліміту, лишилось ' + money0(t.limit - spent) + '</li>');
-    });
-    if (warn.length) html += '<section class="panel"><h2>⚠️ Попередження про ліміти</h2><ul class="warn">' + warn.join('') + '</ul></section>';
+    html += limitsPanel(s);
 
     // Графік
     var rows = Object.keys(s.byTop).map(function (id) { return { id: id, sum: s.byTop[id] }; }).sort(function (a, b) { return b.sum - a.sum; });
@@ -282,6 +544,8 @@
       html += '<div class="legend"><span><i class="dot p-crit"></i>Критично</span><span><i class="dot p-imp"></i>Важливо</span><span><i class="dot p-save"></i>Можна економити</span></div>';
     }
     html += '</section>';
+
+    html += comparePanel(s);
 
     // Пріоритети
     if (s.expense > 0) {
@@ -468,6 +732,16 @@
           (g.currency === 'EUR' && rate ? ' (≈ ' + money0(rest / months * rate) + ')' : '') + '</div>';
         else if (rest > 0) html += '<div class="goal-sub neg">📅 Термін минув, не вистачає ' + money0(rest, g.currency) + '</div>';
       }
+      var rest2 = Math.max(0, g.target - saved), pace = goalPace(g);
+      if (rest2 > 0 && pace > 0) {
+        var need = Math.ceil(rest2 / pace - 1e-9), eta = shiftMonth(curMonth(), need);
+        var late = g.deadline && eta > g.deadline.slice(0, 7);
+        html += '<div class="goal-eta' + (late ? ' late' : '') + '">🗓 Зараз відкладаєте ~<b>' + money0(pace, g.currency) + '</b> на місяць. ' +
+          'Так зберете всю суму приблизно в <b>' + monthLabel(eta).toLowerCase() + '</b> (через ' + need + ' міс.)' +
+          (late ? '. Це пізніше за ваш термін — треба відкладати більше.' : '.') + '</div>';
+      } else if (rest2 > 0 && !g.deadline) {
+        html += '<div class="goal-sub">🗓 Поповнюйте ціль щомісяця — і тут з\'явиться, коли ви зберете всю суму.</div>';
+      }
       if (pct >= 100) html += '<div class="goal-sub pos">🎉 Ціль досягнута!</div>';
     } else {
       html += '<div class="goal-nums">Зібрано: <b>' + money(saved, g.currency) + '</b></div>' +
@@ -526,8 +800,26 @@
       '<label>1 € = ? ₴<input id="eurRate" type="text" inputmode="decimal" value="' + (s.eurRate || '') + '" placeholder="Напр. 45,50"></label>' +
       hint('Вписуйте вручну, за яким курсом купуєте євро (з банку чи обмінника). Застосунок сам в інтернет не ходить.') + '</section>';
 
+    // Нагадування
+    var perm = notifySupported() ? Notification.permission : 'unsupported';
+    var withDay = data.recurring.concat(planEntriesFrom(curMonth())).filter(function (x) { return x.day; }).length;
+    html += '<section class="panel form"><h2>🔔 Нагадування про платежі</h2>' +
+      hint('Застосунок нагадує про платежі з «📝 Плану», у яких вказано <b>число оплати</b>' + (withDay ? ' (зараз таких: ' + withDay + ')' : ' — поки жодного, додайте число в Плані') + '.') +
+      '<label>Коли нагадувати<select id="remindDays">' +
+      [[-1, 'Не нагадувати'], [0, 'У день оплати'], [1, 'За 1 день'], [2, 'За 2 дні'], [3, 'За 3 дні'], [5, 'За 5 днів']].map(function (o) {
+        return '<option value="' + o[0] + '"' + (s.remindDays === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
+      }).join('') + '</select></label>' +
+      hint('Нагадування завжди видно вгорі на 🏠 Головній.') +
+      (perm === 'granted' ? '<p class="ok-note">✅ Сповіщення на телефоні увімкнено. Вони приходять, коли ви відкриваєте застосунок, а на Android — інколи й коли він закритий.</p>'
+        : perm === 'denied' ? '<p class="note warn-note">🚫 Сповіщення заборонено в браузері. Щоб увімкнути: налаштування браузера → Сайти → Сповіщення.</p>'
+        : perm === 'unsupported' ? '<p class="note">Цей браузер не показує сповіщення. Скористайтесь календарем нижче — він нагадає точно.</p>'
+        : '<button class="btn primary" data-act="notify-on">🔔 Увімкнути сповіщення</button>' + hint('Телефон запитає дозвіл — натисніть «Дозволити».')) +
+      '<button class="btn" data-act="export-ics">📅 Додати платежі в календар телефону</button>' +
+      hint('<b>Найнадійніший спосіб.</b> Збережеться файл — відкрийте його, і платежі з\'являться в календарі, який сам нагадає, навіть якщо застосунок закритий. Якщо зміните платежі — зробіть це ще раз.') +
+      '</section>';
+
     // Категорії
-    html += '<section class="panel"><h2>🗂 Категорії та ліміти</h2>' +
+    html += '<section class="panel" id="limits"><h2>🗂 Категорії та ліміти</h2>' +
       hint('<b>Ліміт</b> — скільки максимум хочете витрачати на категорію за місяць. Коли витрачено 80% — буде жовте попередження, понад 100% — червоне. 0 = без ліміту.') +
       hint('<b>Колір</b>: 🔴 критично (без цього ніяк), 🟡 важливо, 🟢 можна економити. Від кольору залежать поради.') +
       '<div class="seg-ctl"><button type="button" data-act="cat-type" data-type="expense" class="' + (ui.catType === 'expense' ? 'on out' : '') + '">Витрати</button>' +
@@ -550,7 +842,10 @@
       '<button class="btn primary" data-act="export-xlsx">📗 Зберегти в Excel</button>' +
       hint('Таблиця з усіма записами, цілями та підсумками по місяцях. Для перегляду на комп\'ютері.') +
       '<button class="btn primary" data-act="export-json">💾 Зберегти резервну копію</button>' +
-      hint('Файл, з якого можна все відновити (наприклад, на новому телефоні). Робіть копію <b>раз на тиждень</b> і зберігайте у надійному місці.') +
+      hint('Файл, з якого можна все відновити (наприклад, на новому телефоні). Робіть копію <b>раз на тиждень</b> і зберігайте у надійному місці.' +
+        (s.lastBackup ? ' Остання копія: <b>' + fmtDate(localDay(s.lastBackup)) + '</b>.' : ' Ви ще не робили копію.')) +
+      (canShareFiles() ? '<button class="btn" data-act="share-json">📤 Надіслати копію на Google Диск, у Telegram…</button>' +
+        hint('Відкриється меню «Поділитися». Оберіть Google Диск або Telegram («Збережене»). Так копія буде не тільки на телефоні.') : '') +
       '<button class="btn" data-act="import-json">📂 Відновити з резервної копії</button>' +
       hint('Оберіть раніше збережений файл .json. <b>Увага:</b> поточні дані будуть замінені даними з файлу.') +
       '</section>';
@@ -597,6 +892,12 @@
   function planEntries() {
     var all = data.recurring.slice();
     Object.keys(data.plans).forEach(function (m) { all = all.concat(data.plans[m].items); });
+    return all;
+  }
+
+  function planEntriesFrom(m) { // разові пункти з планів від місяця m і далі
+    var all = [];
+    Object.keys(data.plans).forEach(function (k) { if (k >= m) all = all.concat(data.plans[k].items); });
     return all;
   }
 
@@ -695,7 +996,7 @@
         return '<li class="tx' + (paid ? ' paid' : '') + '">' +
           '<button class="check' + (paid ? ' on' : '') + '" data-act="plan-pay" data-id="' + x.id + '" aria-label="' + (paid ? 'Зняти позначку «оплачено»' : 'Позначити як оплачене') + '">' + (paid ? '✓' : '') + '</button>' +
           '<div class="tx-main" data-act="plan-edit" data-kind="' + kind + '" data-id="' + x.id + '"><div class="tx-cat">' + esc(x.name) + '</div>' +
-          '<div class="tx-sub">' + (paid ? 'Оплачено' + (p.paid[x.id] ? ' · записано у витрати' : '') : (c ? esc(catLabel(c.id)) : 'Натисніть, щоб змінити')) + '</div></div>' +
+          '<div class="tx-sub">' + (paid ? 'Оплачено' + (p.paid[x.id] ? ' · записано у витрати' : '') : (x.day ? '🔔 ' + Math.min(x.day, daysIn(ui.planMonth)) + ' числа · ' : '') + (c ? esc(catLabel(c.id)) : 'Натисніть, щоб змінити')) + '</div></div>' +
           '<div class="tx-sum">' + money0(x.amount) + '</div></li>';
       }).join('') + '</ul>';
     } else if (!f) html += '<p class="muted">Поки порожньо.</p>';
@@ -709,6 +1010,8 @@
       '<label>Назва<input name="name" type="text" required maxlength="40" value="' + esc(x ? x.name : '') + '" placeholder="' + (kind === 'rec' ? 'Напр. Кредит за авто' : 'Напр. Зимова куртка') + '"></label>' +
       '<label>Сума, ₴<input name="amount" type="text" inputmode="decimal" required value="' + (x ? x.amount : '') + '" placeholder="Напр. 2500"></label>' +
       (kind === 'rec' ? hint('Якщо сума щомісяця різна (як комуналка) — впишіть приблизну, з запасом.') : '') +
+      '<label>Число оплати (не обов\'язково)<input name="day" type="text" inputmode="numeric" maxlength="2" value="' + (x && x.day ? x.day : '') + '" placeholder="Напр. 15"></label>' +
+      hint('До якого числа місяця треба заплатити (1–31). Тоді застосунок <b>нагадає заздалегідь</b>. Якщо в місяці менше днів — нагадає про останній день.') +
       '<label>Категорія<select name="categoryId"><option value="">Не записувати у витрати</option>' + categoryOptions('expense', x ? x.categoryId : '') + '</select></label>' +
       hint('Якщо оберете категорію — коли позначите «оплачено», застосунок <b>сам запише</b> цю витрату. Вносити двічі не треба.') +
       '<div class="btn-row"><button class="btn primary" type="submit">Зберегти</button><button class="btn" type="button" data-act="plan-cancel">Скасувати</button></div>' +
@@ -717,8 +1020,8 @@
 
   function focusPlanForm() { var i = document.querySelector('#planForm input[name="name"]'); if (i) { i.scrollIntoView({ block: 'center' }); if (!ui.planForm.id) i.focus(); } }
 
-  function findPlanEntry(id) {
-    var p = getPlan(ui.planMonth);
+  function findPlanEntry(id, month) {
+    var p = getPlan(month || ui.planMonth);
     var all = data.recurring.concat(p.items);
     for (var i = 0; i < all.length; i++) if (all[i].id === id) return all[i];
     return null;
@@ -733,8 +1036,10 @@
     var name = f.name.value.trim(); if (!name) { toast('Вкажіть назву', true); return; }
     var amount = parseNum(f.amount.value);
     if (isNaN(amount) || amount <= 0) { toast('Вкажіть суму цифрами, більше нуля', true); f.amount.focus(); return; }
+    var day = f.day.value.trim() === '' ? 0 : parseNum(f.day.value);
+    if (isNaN(day) || day < 0 || day > 31 || day !== Math.floor(day)) { toast('Число оплати — від 1 до 31', true); f.day.focus(); return; }
     var kind = f.getAttribute('data-kind'), id = f.getAttribute('data-id');
-    var rec = { name: name, amount: round2(amount), categoryId: f.categoryId.value };
+    var rec = { name: name, amount: round2(amount), categoryId: f.categoryId.value, day: day };
     if (id) { var x = findPlanEntry(id); if (x) Object.assign(x, rec); }
     else {
       rec.id = uid();
@@ -753,9 +1058,10 @@
     save(); ui.planForm = null; toast('Видалено'); render();
   }
 
-  function togglePaid(id) {
-    var x = findPlanEntry(id); if (!x) return;
-    var p = getPlan(ui.planMonth, true);
+  function togglePaid(id, month) {
+    month = month || ui.planMonth;
+    var x = findPlanEntry(id, month); if (!x) return;
+    var p = getPlan(month, true);
     if (p.paid[id] !== undefined) {
       var tx = p.paid[id] ? txById(p.paid[id]) : null;
       if (tx) {
@@ -767,7 +1073,7 @@
     }
     var txId = '';
     if (x.categoryId && catById(x.categoryId)) {
-      var d = ui.planMonth === curMonth() ? today() : ui.planMonth + '-01';
+      var d = month === curMonth() ? today() : month + '-01';
       var t = { id: uid(), created: Date.now(), type: 'expense', amount: x.amount, categoryId: x.categoryId, date: d, note: x.name + ' (за планом)' };
       data.transactions.push(t); txId = t.id;
     }
@@ -817,6 +1123,15 @@
       case 'plan-cancel': ui.planForm = null; render(); break;
       case 'plan-del': deletePlanEntry(id); break;
       case 'plan-pay': togglePaid(id); break;
+      case 'remind-pay': togglePaid(id, el.getAttribute('data-month')); break;
+      case 'go-limits':
+        ui.catType = 'expense'; go('settings');
+        var lp = document.getElementById('limits'); if (lp) lp.scrollIntoView({ block: 'start' });
+        break;
+      case 'cmp-mode': ui.cmpSame = el.getAttribute('data-same') === '1'; render(); break;
+      case 'notify-on': enableNotifications(); break;
+      case 'export-ics': exportCalendar(); break;
+      case 'share-json': shareJson(); break;
       case 'plan-income-suggest': setPlanIncome(+el.getAttribute('data-sum') || 0); break;
       case 'go-add': go('add'); break;
       case 'go-settings': go('settings'); break;
@@ -894,6 +1209,11 @@
       if (isNaN(inc) || inc < 0) { toast('Вкажіть суму цифрами, напр. 30000', true); return; }
       setPlanIncome(inc); return;
     }
+    if (el.id === 'remindDays') {
+      data.settings.remindDays = +el.value; save(); registerBackgroundCheck();
+      resetShown(); checkNotifications();
+      toast(data.settings.remindDays < 0 ? 'Нагадування вимкнено' : 'Збережено ✓'); return;
+    }
     if (el.id === 'eurRate') {
       var r = el.value.trim() === '' ? 0 : parseNum(el.value);
       if (isNaN(r) || r < 0) { toast('Курс має бути числом, напр. 45,50', true); return; }
@@ -932,7 +1252,8 @@
     } else {
       rec.id = uid(); rec.created = Date.now();
       data.transactions.push(rec);
-      if (save()) toast((rec.type === 'income' ? 'Дохід ' : 'Витрату ') + money(rec.amount) + ' збережено ✓');
+      var lw = limitToast(rec);
+      if (save()) toast(lw ? 'Збережено ✓ ' + lw : (rec.type === 'income' ? 'Дохід ' : 'Витрату ') + money(rec.amount) + ' збережено ✓', !!lw && lw.charAt(0) === '🔴');
     }
     ui.month = rec.date.slice(0, 7);
     ui.addType = rec.type;
@@ -1066,9 +1387,29 @@
     toast('Файл збережено: ' + filename);
   }
 
+  function backupBlob(mark) {
+    if (mark) { data.settings.lastBackup = Date.now(); save(); }
+    return new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' });
+  }
+
   function exportJson() {
-    var blob = new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' });
-    deliver(blob, 'budget-backup_' + stamp() + '.json');
+    deliver(backupBlob(true), 'budget-backup_' + stamp() + '.json');
+    if (ui.tab === 'home' || ui.tab === 'settings') setTimeout(render, 300);
+  }
+
+  function canShareFiles() {
+    try { return !!(navigator.canShare && typeof File === 'function' && navigator.canShare({ files: [new File(['x'], 'x.json', { type: 'application/json' })] })); }
+    catch (e) { return false; }
+  }
+
+  // «Поділитися» файлом: Google Диск, Telegram, пошта — що є на телефоні
+  function shareJson() {
+    var name = 'budget-backup_' + stamp() + '.json';
+    var file = new File([backupBlob()], name, { type: 'application/json' });
+    if (!canShareFiles()) { exportJson(); return; }
+    navigator.share({ files: [file], title: 'Резервна копія бюджету' })
+      .then(function () { data.settings.lastBackup = Date.now(); save(); toast('Копію надіслано ✓'); render(); })
+      .catch(function (e) { if (e && e.name !== 'AbortError') exportJson(); else render(); });
   }
 
   function goalName(id) { var g = data.goals.filter(function (x) { return x.id === id; })[0]; return g ? g.name : '—'; }
@@ -1150,6 +1491,15 @@
   // ---------------- Старт ----------------
   render();
   if (data.settings.pinHash) lock();
+  syncReminderSchedule();
+  registerBackgroundCheck();
+  checkNotifications();
+  var lastDay = today();
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) return;
+    checkNotifications();
+    if (today() !== lastDay) { lastDay = today(); if (ui.tab === 'home') render(); }
+  });
 
   // Робота без інтернету (лише коли сайт відкрито через https або локально)
   if ('serviceWorker' in navigator && window.isSecureContext) {

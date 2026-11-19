@@ -253,3 +253,33 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
 @media (min-width: 560px) {
   .cards { grid-template-columns: repeat(4, 1fr); }
 }
+
+/* Нагадування про платежі */
+.remind { border-left: 5px solid var(--imp); }
+.remind .tx { cursor: default; }
+.due-soon { color: color-mix(in srgb, var(--imp) 75%, var(--text)); font-weight: 600; }
+.tx-sub.neg { color: var(--out); font-weight: 600; }
+.nudge { border-left: 5px solid var(--sav); }
+.nudge p { margin: 0 0 4px; }
+.ok-note { font-size: 14px; background: color-mix(in srgb, var(--save) 14%, var(--panel)); padding: 10px 12px; border-radius: 10px; margin: 12px 0 0; }
+
+/* Цілі: прогноз */
+.goal-eta { font-size: 14px; margin-top: 8px; padding: 8px 10px; border-radius: 10px; background: var(--accent-2); }
+.goal-eta.late { background: color-mix(in srgb, var(--imp) 18%, var(--panel)); }
+
+/* Порівняння місяців */
+.small-seg button { font-size: 14px; padding: 8px 6px; }
+.cmp-total { font-size: 15px; margin: 10px 0 14px; display: grid; gap: 4px; }
+.chg { font-size: 13px; font-weight: 700; white-space: nowrap; }
+.chg.pos { color: var(--in); }
+.chg.neg { color: var(--out); }
+.cmp-total .chg { margin-left: 4px; }
+.cmp-row .bar-head span:last-child { font-weight: 700; }
+.cmp-line { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.cmp-line .bar { flex: 1; height: 8px; }
+.cmp-lbl { width: 30px; font-size: 12px; color: var(--muted); flex: none; }
+.cmp-val { width: 76px; text-align: right; font-size: 13px; flex: none; }
+.fill.cmp-now, .dot.cmp-now { background: var(--accent); }
+.fill.cmp-prev, .dot.cmp-prev { background: color-mix(in srgb, var(--muted) 55%, var(--line)); }
+.remind .tx-sub { white-space: normal; }
+.inline-add > .btn { width: auto; }
