@@ -14,7 +14,7 @@
     save: { label: 'Можна економити', short: 'Економія', cls: 'p-save', hint: 'Можна скоротити без шкоди для сім\'ї' }
   };
   var MONTHS = ['Січень', 'Лютий', 'Березень', 'Квітень', 'Травень', 'Червень', 'Липень', 'Серпень', 'Вересень', 'Жовтень', 'Листопад', 'Грудень'];
-  var TITLES = { home: 'Огляд місяця', add: 'Додати запис', history: 'Історія', goals: 'Накопичення', settings: 'Налаштування' };
+  var TITLES = { home: 'Огляд місяця', add: 'Додати запис', history: 'Історія', plan: 'План на місяць', goals: 'Накопичення', settings: 'Налаштування' };
 
   // ---------------- Утиліти ----------------
   function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
@@ -88,8 +88,24 @@
         { id: uid(), name: 'Гараж', currency: 'UAH', target: 0, deadline: '' },
         { id: uid(), name: 'Відпустка', currency: 'UAH', target: 0, deadline: '' }
       ],
-      contributions: []
+      contributions: [],
+      recurring: [],
+      plans: {}
     };
+  }
+
+  // Старі резервні копії не мають розділу «План» — додаємо порожній
+  function normalize(d) {
+    if (!Array.isArray(d.recurring)) d.recurring = [];
+    if (!d.plans || typeof d.plans !== 'object' || Array.isArray(d.plans)) d.plans = {};
+    Object.keys(d.plans).forEach(function (m) {
+      var p = d.plans[m];
+      if (!p || typeof p !== 'object') { delete d.plans[m]; return; }
+      if (!Array.isArray(p.items)) p.items = [];
+      if (!p.paid || typeof p.paid !== 'object') p.paid = {};
+      p.income = +p.income || 0;
+    });
+    return d;
   }
 
   function isValidData(d) {
@@ -102,7 +118,7 @@
       var raw = localStorage.getItem(KEY);
       if (raw) {
         var d = JSON.parse(raw);
-        if (isValidData(d)) return d;
+        if (isValidData(d)) return normalize(d);
       }
     } catch (e) { /* пошкоджені дані — почнемо з нуля */ }
     var fresh = defaultData();
@@ -116,7 +132,7 @@
   }
 
   var data = load();
-  var ui = { tab: 'home', month: curMonth(), addType: 'expense', editId: null, histCat: '', goalForm: null, newGoal: false, catType: 'expense' };
+  var ui = { tab: 'home', month: curMonth(), addType: 'expense', editId: null, histCat: '', goalForm: null, newGoal: false, catType: 'expense', planMonth: shiftMonth(curMonth(), 1), planForm: null };
 
   // Просимо браузер не видаляти наші дані автоматично
   if (navigator.storage && navigator.storage.persist) { navigator.storage.persist().catch(function () { }); }
@@ -196,9 +212,9 @@
       b.classList.toggle('active', b.getAttribute('data-tab') === ui.tab);
     });
     $('#title').textContent = TITLES[ui.tab];
-    var showMonth = ui.tab === 'home' || ui.tab === 'history';
+    var showMonth = ui.tab === 'home' || ui.tab === 'history' || ui.tab === 'plan';
     $('#monthBar').hidden = !showMonth;
-    $('#monthLabel').textContent = monthLabel(ui.month);
+    $('#monthLabel').textContent = monthLabel(ui.tab === 'plan' ? ui.planMonth : ui.month);
     var v = $('#view');
     v.innerHTML = VIEWS[ui.tab]();
     afterRender();
@@ -232,6 +248,8 @@
       card('Відкладено', s.saved, 'c-sav', 'Покладено на цілі') +
       card('Залишок', s.left, s.left < 0 ? 'c-neg' : 'c-left', s.left < 0 ? 'Витратили більше, ніж заробили' : 'Вільні гроші') +
       '</section>';
+
+    html += homePlanPanel();
 
     // Ліміти
     var warn = [];
@@ -338,7 +356,7 @@
 
     html += '<label>Категорія<select name="categoryId" required>' + categoryOptions(type, t ? t.categoryId : '') + '</select></label>' +
       hint(type === 'expense'
-        ? 'Оберіть, на що витратили. Кольорова позначка категорії: 🔴 критично, 🟡 важливо, 🟢 можна економити. Змінити список можна в «Налаштуваннях».'
+        ? 'Оберіть, на що витратили. Кольорова позначка категорії: 🔴 критично, 🟡 важливо, 🟢 можна економити. Змінити список можна в «⚙️ Опціях».'
         : 'Звідки гроші. Зазвичай це «Зарплата».');
 
     html += '<label>Дата<input name="date" type="date" required value="' + (t ? t.date : (ui.month === curMonth() ? today() : ui.month + '-01')) + '"></label>' +
@@ -423,7 +441,7 @@
     var rate = data.settings.eurRate || 0;
     var html = '<p class="intro">Тут ви збираєте гроші на великі мрії. Кожного разу, коли відкладаєте гроші — натисніть «Поповнити».</p>';
     if (!rate && data.goals.some(function (g) { return g.currency === 'EUR'; })) {
-      html += '<p class="note warn-note">💶 Для цілей у євро вкажіть курс у <a href="#" data-act="go-settings">Налаштуваннях</a>.</p>';
+      html += '<p class="note warn-note">💶 Для цілей у євро вкажіть курс в <a href="#" data-act="go-settings">⚙️ Опціях</a>.</p>';
     }
     html += data.goals.map(goalCard).join('');
 
@@ -567,10 +585,217 @@
       '</div></details>';
   }
 
-  var VIEWS = { home: viewHome, add: viewAdd, history: viewHistory, goals: viewGoals, settings: viewSettings };
+  // ----- План на місяць -----
+  // Обов'язкові платежі (data.recurring) повторюються щомісяця самі.
+  // Разові покупки, очікуваний дохід і позначки «оплачено» зберігаються окремо для кожного місяця (data.plans['РРРР-ММ']).
+  function getPlan(m, create) {
+    var p = data.plans[m];
+    if (!p && create) p = data.plans[m] = { income: 0, items: [], paid: {} };
+    return p || { income: 0, items: [], paid: {} };
+  }
+
+  function planEntries() {
+    var all = data.recurring.slice();
+    Object.keys(data.plans).forEach(function (m) { all = all.concat(data.plans[m].items); });
+    return all;
+  }
+
+  function txById(id) { for (var i = 0; i < data.transactions.length; i++) if (data.transactions[i].id === id) return data.transactions[i]; return null; }
+
+  function planTotals(m) {
+    var p = getPlan(m), t = { income: p.income || 0, rec: 0, items: 0, paidSum: 0, paidTx: {}, list: [] };
+    data.recurring.forEach(function (r) { t.rec += r.amount; t.list.push({ kind: 'rec', id: r.id, name: r.name, amount: r.amount, categoryId: r.categoryId }); });
+    p.items.forEach(function (it) { t.items += it.amount; t.list.push({ kind: 'item', id: it.id, name: it.name, amount: it.amount, categoryId: it.categoryId }); });
+    t.list.forEach(function (x) {
+      if (p.paid[x.id] === undefined) return;
+      t.paidSum += x.amount;
+      if (p.paid[x.id]) t.paidTx[p.paid[x.id]] = 1;
+    });
+    t.planned = t.rec + t.items;
+    t.other = t.income - t.planned;
+    return t;
+  }
+
+  function daysIn(m) { return new Date(+m.slice(0, 4), +m.slice(5, 7), 0).getDate(); }
+
+  // Скільки вже витрачено «на все інше» (поза планом) у поточному місяці
+  function outsidePlanSpent(m, t) {
+    var sum = 0;
+    data.transactions.forEach(function (x) {
+      if (x.type === 'expense' && x.date.slice(0, 7) === m && !t.paidTx[x.id]) sum += x.amount;
+    });
+    return sum;
+  }
+
+  function lastIncome(m) {
+    for (var k = 1; k <= 6; k++) {
+      var pm = shiftMonth(m, -k), s = summary(pm);
+      if (s.income > 0) return { month: pm, sum: s.income };
+    }
+    return null;
+  }
+
+  function viewPlan() {
+    var m = ui.planMonth, p = getPlan(m), t = planTotals(m);
+    var isCur = m === curMonth();
+    var html = '<p class="intro">Сплануйте місяць наперед: скільки грошей прийде і що обов\'язково треба оплатити чи купити. ' +
+      'Застосунок покаже, скільки лишиться <b>на все інше</b>. Місяць змінюється стрілками вгорі.</p>';
+
+    // Підсумок
+    var perDay = t.other > 0 ? t.other / daysIn(m) : 0;
+    html += '<section class="cards">' +
+      card('Очікую доходів', t.income, 'c-in', t.income ? 'Скільки грошей прийде' : 'Впишіть нижче') +
+      card('Обов\'язкові', t.rec, 'c-out', 'Щомісячні платежі') +
+      card('Покупки', t.items, 'c-sav', 'Разові на цей місяць') +
+      card('На все інше', t.other, t.other < 0 ? 'c-neg' : 'c-left',
+        !t.income ? 'Спершу вкажіть дохід' : t.other < 0 ? 'Не вистачає грошей!' : '≈ ' + money0(perDay) + ' на день') +
+      '</section>';
+
+    if (t.income > 0) {
+      var free = Math.max(0, t.other), base = Math.max(t.income, t.planned);
+      html += '<section class="panel"><h2>🥧 Як розподілено гроші</h2><div class="stack">' +
+        (t.rec ? '<div class="seg p-crit" data-w="' + (t.rec / base * 100) + '"></div>' : '') +
+        (t.items ? '<div class="seg p-sav" data-w="' + (t.items / base * 100) + '"></div>' : '') +
+        (free ? '<div class="seg p-save" data-w="' + (free / base * 100) + '"></div>' : '') + '</div>' +
+        '<div class="legend"><span><i class="dot p-crit"></i>Обов\'язкові</span><span><i class="dot p-sav"></i>Покупки</span><span><i class="dot p-save"></i>На все інше</span></div>';
+      if (t.other < 0) html += '<ul class="warn"><li class="w-bad">🔴 Заплановано на <b>' + money0(-t.other) + '</b> більше, ніж прийде грошей. Приберіть або перенесіть якусь покупку на інший місяць.</li></ul>';
+      else if (t.other < t.income * 0.1) html += '<ul class="warn"><li class="w-mid">🟡 На все інше лишається менше 10% доходу. Буде туго — подумайте, що можна перенести.</li></ul>';
+      if (t.planned) html += '<div class="plan-progress">✅ Оплачено: <b>' + money0(t.paidSum) + '</b> з ' + money0(t.planned) +
+        '<div class="bar"><div class="fill p-save" data-w="' + (t.paidSum / t.planned * 100) + '"></div></div></div>';
+      if (isCur) {
+        var spent = outsidePlanSpent(m, t), rest = t.other - spent;
+        html += '<p class="plan-fact">Цього місяця «на все інше» вже витрачено <b>' + money0(spent) + '</b>. ' +
+          (rest >= 0 ? 'Лишилось <b class="pos">' + money0(rest) + '</b>.' : 'Це на <b class="neg">' + money0(-rest) + '</b> більше, ніж планували.') + '</p>';
+      }
+      html += '</section>';
+    }
+
+    // Дохід
+    var li = lastIncome(m);
+    html += '<section class="panel form"><h2>💰 Скільки грошей очікую</h2>' +
+      '<label>Дохід за ' + monthLabel(m).toLowerCase() + ', ₴<input id="planIncome" type="text" inputmode="decimal" value="' + (p.income || '') + '" placeholder="Напр. 30000"></label>' +
+      hint('Зарплата та інші гроші, які точно прийдуть цього місяця. Зберігається саме.');
+    if (li && !p.income) html += '<button class="btn" data-act="plan-income-suggest" data-sum="' + round2(li.sum) + '">Як за ' + monthLabel(li.month).toLowerCase() + ': ' + money0(li.sum) + '</button>';
+    html += '</section>';
+
+    // Обов'язкові
+    html += planList('rec', '📌 Обов\'язкові платежі', 'Повторюються <b>кожного місяця</b> самі: кредит, комуналка, навчання. Додайте один раз. Натисніть кружечок ○, коли оплатите.', data.recurring, p);
+    // Разові
+    html += planList('item', '🛒 Покупки й оплати на цей місяць', 'Разові речі тільки на ' + monthLabel(m).toLowerCase() + ': куртка, ремонт, подарунок, страховка.', p.items, p);
+    return html;
+  }
+
+  function planList(kind, title, help, list, p) {
+    var f = ui.planForm && ui.planForm.kind === kind ? ui.planForm : null;
+    var html = '<section class="panel"><h2>' + title + '</h2>' + hint(help);
+    if (list.length) {
+      html += '<ul class="tx-list plan-list">' + list.map(function (x) {
+        if (f && f.id === x.id) return '<li>' + planForm(kind, x) + '</li>';
+        var paid = p.paid[x.id] !== undefined, c = x.categoryId ? catById(x.categoryId) : null;
+        return '<li class="tx' + (paid ? ' paid' : '') + '">' +
+          '<button class="check' + (paid ? ' on' : '') + '" data-act="plan-pay" data-id="' + x.id + '" aria-label="' + (paid ? 'Зняти позначку «оплачено»' : 'Позначити як оплачене') + '">' + (paid ? '✓' : '') + '</button>' +
+          '<div class="tx-main" data-act="plan-edit" data-kind="' + kind + '" data-id="' + x.id + '"><div class="tx-cat">' + esc(x.name) + '</div>' +
+          '<div class="tx-sub">' + (paid ? 'Оплачено' + (p.paid[x.id] ? ' · записано у витрати' : '') : (c ? esc(catLabel(c.id)) : 'Натисніть, щоб змінити')) + '</div></div>' +
+          '<div class="tx-sum">' + money0(x.amount) + '</div></li>';
+      }).join('') + '</ul>';
+    } else if (!f) html += '<p class="muted">Поки порожньо.</p>';
+    if (f && !f.id) html += planForm(kind, null);
+    else if (!f) html += '<button class="btn primary small-btn" data-act="plan-new" data-kind="' + kind + '">+ Додати</button>';
+    return html + '</section>';
+  }
+
+  function planForm(kind, x) {
+    return '<form id="planForm" class="form sub-form" data-kind="' + kind + '" data-id="' + (x ? x.id : '') + '" autocomplete="off">' +
+      '<label>Назва<input name="name" type="text" required maxlength="40" value="' + esc(x ? x.name : '') + '" placeholder="' + (kind === 'rec' ? 'Напр. Кредит за авто' : 'Напр. Зимова куртка') + '"></label>' +
+      '<label>Сума, ₴<input name="amount" type="text" inputmode="decimal" required value="' + (x ? x.amount : '') + '" placeholder="Напр. 2500"></label>' +
+      (kind === 'rec' ? hint('Якщо сума щомісяця різна (як комуналка) — впишіть приблизну, з запасом.') : '') +
+      '<label>Категорія<select name="categoryId"><option value="">Не записувати у витрати</option>' + categoryOptions('expense', x ? x.categoryId : '') + '</select></label>' +
+      hint('Якщо оберете категорію — коли позначите «оплачено», застосунок <b>сам запише</b> цю витрату. Вносити двічі не треба.') +
+      '<div class="btn-row"><button class="btn primary" type="submit">Зберегти</button><button class="btn" type="button" data-act="plan-cancel">Скасувати</button></div>' +
+      (x ? '<button class="btn danger small-btn" type="button" data-act="plan-del" data-id="' + x.id + '">Видалити</button>' : '') + '</form>';
+  }
+
+  function focusPlanForm() { var i = document.querySelector('#planForm input[name="name"]'); if (i) { i.scrollIntoView({ block: 'center' }); if (!ui.planForm.id) i.focus(); } }
+
+  function findPlanEntry(id) {
+    var p = getPlan(ui.planMonth);
+    var all = data.recurring.concat(p.items);
+    for (var i = 0; i < all.length; i++) if (all[i].id === id) return all[i];
+    return null;
+  }
+
+  function setPlanIncome(sum) {
+    getPlan(ui.planMonth, true).income = round2(sum);
+    save(); toast('Дохід збережено ✓'); render();
+  }
+
+  function submitPlanForm(f) {
+    var name = f.name.value.trim(); if (!name) { toast('Вкажіть назву', true); return; }
+    var amount = parseNum(f.amount.value);
+    if (isNaN(amount) || amount <= 0) { toast('Вкажіть суму цифрами, більше нуля', true); f.amount.focus(); return; }
+    var kind = f.getAttribute('data-kind'), id = f.getAttribute('data-id');
+    var rec = { name: name, amount: round2(amount), categoryId: f.categoryId.value };
+    if (id) { var x = findPlanEntry(id); if (x) Object.assign(x, rec); }
+    else {
+      rec.id = uid();
+      if (kind === 'rec') data.recurring.push(rec);
+      else getPlan(ui.planMonth, true).items.push(rec);
+    }
+    save(); ui.planForm = null; toast('Збережено ✓'); render();
+  }
+
+  function deletePlanEntry(id) {
+    var x = findPlanEntry(id); if (!x) return;
+    var isRec = data.recurring.indexOf(x) >= 0;
+    if (!confirm(isRec ? 'Видалити «' + x.name + '» з обов\'язкових платежів? Він зникне з усіх місяців.' : 'Видалити «' + x.name + '» з плану?')) return;
+    if (isRec) data.recurring = data.recurring.filter(function (r) { return r.id !== id; });
+    else { var p = getPlan(ui.planMonth); p.items = p.items.filter(function (r) { return r.id !== id; }); delete p.paid[id]; }
+    save(); ui.planForm = null; toast('Видалено'); render();
+  }
+
+  function togglePaid(id) {
+    var x = findPlanEntry(id); if (!x) return;
+    var p = getPlan(ui.planMonth, true);
+    if (p.paid[id] !== undefined) {
+      var tx = p.paid[id] ? txById(p.paid[id]) : null;
+      if (tx) {
+        if (!confirm('Зняти позначку «оплачено»? Запис витрати ' + money(tx.amount) + ' від ' + fmtDate(tx.date) + ' теж буде видалено.')) return;
+        data.transactions = data.transactions.filter(function (t) { return t.id !== tx.id; });
+      }
+      delete p.paid[id];
+      save(); toast('Позначку знято'); render(); return;
+    }
+    var txId = '';
+    if (x.categoryId && catById(x.categoryId)) {
+      var d = ui.planMonth === curMonth() ? today() : ui.planMonth + '-01';
+      var t = { id: uid(), created: Date.now(), type: 'expense', amount: x.amount, categoryId: x.categoryId, date: d, note: x.name + ' (за планом)' };
+      data.transactions.push(t); txId = t.id;
+    }
+    p.paid[id] = txId;
+    save(); toast(txId ? 'Оплачено ✓ Записано у витрати' : 'Оплачено ✓'); render();
+  }
+
+  // Коротка картка плану на Головній (лише для поточного місяця)
+  function homePlanPanel() {
+    var m = ui.month;
+    if (m !== curMonth()) return '';
+    var t = planTotals(m), next = shiftMonth(m, 1);
+    if (!t.income && !t.planned) {
+      return '<section class="panel plan-home"><h2>📝 План</h2><p class="muted">Сплануйте наступний місяць: що обов\'язково оплатити і скільки лишиться на інше.</p>' +
+        '<button class="btn small-btn" data-act="go-plan" data-month="' + next + '">Спланувати ' + monthLabel(next).toLowerCase() + '</button></section>';
+    }
+    var left = t.planned - t.paidSum, spent = outsidePlanSpent(m, t), rest = t.other - spent;
+    return '<section class="panel plan-home"><h2>📝 План на цей місяць</h2>' +
+      '<p>Ще треба оплатити: <b>' + money0(left) + '</b>' + (left <= 0 && t.planned ? ' 🎉' : '') + '</p>' +
+      (t.income ? '<p>На все інше лишилось: <b class="' + (rest < 0 ? 'neg' : 'pos') + '">' + money0(rest) + '</b></p>' : '') +
+      '<div class="btn-row"><button class="btn" data-act="go-plan" data-month="' + m + '">Відкрити план</button>' +
+      '<button class="btn" data-act="go-plan" data-month="' + next + '">План на ' + monthLabel(next).toLowerCase().split(' ')[0] + '</button></div></section>';
+  }
+
+  var VIEWS = { home: viewHome, add: viewAdd, history: viewHistory, plan: viewPlan, goals: viewGoals, settings: viewSettings };
 
   // ---------------- Дії ----------------
-  function go(tab) { ui.tab = tab; ui.goalForm = null; ui.newGoal = false; if (tab !== 'add') ui.editId = null; render(); window.scrollTo(0, 0); }
+  function go(tab) { ui.tab = tab; ui.goalForm = null; ui.newGoal = false; ui.planForm = null; if (tab !== 'add') ui.editId = null; render(); window.scrollTo(0, 0); }
 
   document.addEventListener('click', function (e) {
     var tabBtn = e.target.closest('[data-tab]');
@@ -580,8 +805,19 @@
     var act = el.getAttribute('data-act'), id = el.getAttribute('data-id');
     if (el.tagName === 'A') e.preventDefault();
     switch (act) {
-      case 'month-prev': ui.month = shiftMonth(ui.month, -1); render(); break;
-      case 'month-next': ui.month = shiftMonth(ui.month, 1); render(); break;
+      case 'month-prev':
+        if (ui.tab === 'plan') { ui.planMonth = shiftMonth(ui.planMonth, -1); ui.planForm = null; } else ui.month = shiftMonth(ui.month, -1);
+        render(); break;
+      case 'month-next':
+        if (ui.tab === 'plan') { ui.planMonth = shiftMonth(ui.planMonth, 1); ui.planForm = null; } else ui.month = shiftMonth(ui.month, 1);
+        render(); break;
+      case 'go-plan': ui.planMonth = el.getAttribute('data-month') || ui.planMonth; go('plan'); break;
+      case 'plan-new': ui.planForm = { kind: el.getAttribute('data-kind'), id: '' }; render(); focusPlanForm(); break;
+      case 'plan-edit': ui.planForm = { kind: el.getAttribute('data-kind'), id: id }; render(); focusPlanForm(); break;
+      case 'plan-cancel': ui.planForm = null; render(); break;
+      case 'plan-del': deletePlanEntry(id); break;
+      case 'plan-pay': togglePaid(id); break;
+      case 'plan-income-suggest': setPlanIncome(+el.getAttribute('data-sum') || 0); break;
       case 'go-add': go('add'); break;
       case 'go-settings': go('settings'); break;
       case 'type': ui.addType = el.getAttribute('data-type'); if (!ui.editId) render(); else changeEditType(el.getAttribute('data-type')); break;
@@ -621,7 +857,7 @@
       case 'import-json': $('#restoreFile').value = ''; $('#restoreFile').click(); break;
       case 'wipe':
         if (confirm('Видалити ВСІ записи, цілі та налаштування? Це не можна скасувати.') && confirm('Точно? Ви зробили резервну копію?')) {
-          data = defaultData(); save(); ui.month = curMonth(); toast('Усі дані видалено'); go('home');
+          data = defaultData(); save(); ui.month = curMonth(); ui.planMonth = shiftMonth(curMonth(), 1); toast('Усі дані видалено'); go('home');
         }
         break;
     }
@@ -643,6 +879,7 @@
     if (f.id === 'txForm') return submitTx(f);
     if (f.id === 'contribForm') return submitContrib(f);
     if (f.id === 'goalForm') return submitGoal(f);
+    if (f.id === 'planForm') return submitPlanForm(f);
     if (f.id === 'newCatForm') return addCategory(f.name.value, null);
     if (f.getAttribute('data-form') === 'sub') return addCategory(f.name.value, f.getAttribute('data-parent'));
     if (f.id === 'pinForm') return setPin(f.pin.value);
@@ -652,6 +889,11 @@
   document.addEventListener('change', function (e) {
     var el = e.target;
     if (el.id === 'histCat') { ui.histCat = el.value; render(); return; }
+    if (el.id === 'planIncome') {
+      var inc = el.value.trim() === '' ? 0 : parseNum(el.value);
+      if (isNaN(inc) || inc < 0) { toast('Вкажіть суму цифрами, напр. 30000', true); return; }
+      setPlanIncome(inc); return;
+    }
     if (el.id === 'eurRate') {
       var r = el.value.trim() === '' ? 0 : parseNum(el.value);
       if (isNaN(r) || r < 0) { toast('Курс має бути числом, напр. 45,50', true); return; }
@@ -755,6 +997,8 @@
       if (!confirm('Видалити підкатегорію «' + c.name + '»?' + (used ? ' Її записи (' + used + ') перейдуть у «' + topOf(c).name + '».' : ''))) return;
       data.transactions.forEach(function (t) { if (t.categoryId === id) t.categoryId = c.parentId; });
     }
+    // у плані: підкатегорія → батьківська, видалена категорія → «не записувати»
+    planEntries().forEach(function (x) { if (x.categoryId === id) x.categoryId = c.parentId || ''; });
     var parentId = c.parentId;
     data.categories = data.categories.filter(function (x) { return x.id !== id; });
     save(); toast('Видалено'); render();
@@ -869,13 +1113,24 @@
       });
     });
 
+    var planRows = [['Місяць', 'Що це', 'Назва', 'Сума, ₴', 'Оплачено']];
+    Object.keys(data.plans).sort().forEach(function (m) {
+      var t = planTotals(m), p = data.plans[m];
+      if (!t.income && !t.planned) return;
+      planRows.push([monthLabel(m), 'Очікуваний дохід', '', round2(t.income), '']);
+      t.list.forEach(function (x) {
+        planRows.push([monthLabel(m), x.kind === 'rec' ? 'Обов\'язковий платіж' : 'Запланована покупка', x.name, round2(x.amount), p.paid[x.id] !== undefined ? 'так' : 'ні']);
+      });
+      planRows.push([monthLabel(m), 'Лишається на все інше', '', round2(t.other), '']);
+    });
+
     var blob = XlsxLite.build([
       { name: 'Операції', rows: txRows, widths: [12, 10, 24, 24, 18, 12, 30] },
       { name: 'Підсумки по місяцях', rows: sumRows, widths: [16, 12, 12, 12, 12, 13, 13, 18].concat(expTops.map(function () { return 16; })) },
       { name: 'Цілі', rows: goalRows, widths: [24, 8, 12, 12, 12, 12, 12] },
       { name: 'Поповнення цілей', rows: cRows, widths: [12, 24, 10, 8, 8, 12, 16] },
       { name: 'Категорії', rows: catRows, widths: [24, 24, 10, 18, 14] }
-    ]);
+    ].concat(planRows.length > 1 ? [{ name: 'План', rows: planRows, widths: [16, 24, 28, 12, 10] }] : []));
     deliver(blob, 'budget_' + stamp() + '.xlsx');
   }
 
@@ -886,7 +1141,7 @@
       try { d = JSON.parse(r.result); } catch (e) { toast('Це не файл резервної копії', true); return; }
       if (!isValidData(d)) { toast('Файл пошкоджений або не від цього застосунку', true); return; }
       if (!confirm('Замінити всі поточні дані даними з файлу? (записів у файлі: ' + d.transactions.length + ')')) return;
-      data = d; save(); toast('Дані відновлено ✓'); go('home');
+      data = normalize(d); save(); toast('Дані відновлено ✓'); go('home');
     };
     r.onerror = function () { toast('Не вдалося прочитати файл', true); };
     r.readAsText(file);
