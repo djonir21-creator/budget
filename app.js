@@ -123,7 +123,7 @@
     add('Інше', 'expense', 'important', []);
     return {
       version: 1,
-      settings: { eurRate: 0, pinHash: '', pinSalt: '', remindDays: 2, lastBackup: 0, theme: 'auto', onboarded: false },
+      settings: { eurRate: 0, pinHash: '', pinSalt: '', remindDays: 2, lastBackup: 0, theme: 'auto', onboarded: false, deviceId: uid(), person: '', partners: {} },
       categories: cats,
       transactions: [],
       goals: [
@@ -134,7 +134,8 @@
       contributions: [],
       recurring: [],
       plans: {},
-      rules: {}
+      rules: {},
+      deleted: {}
     };
   }
 
@@ -143,7 +144,11 @@
     if (d.settings.remindDays === undefined) d.settings.remindDays = 2;
     if (!d.settings.lastBackup) d.settings.lastBackup = 0;
     if (!d.settings.theme) d.settings.theme = 'auto';
-    if (!d.rules || typeof d.rules !== 'object' || Array.isArray(d.rules)) d.rules = {}; // як розкладати операції з виписки банку
+    if (!d.rules || typeof d.rules !== 'object' || Array.isArray(d.rules)) d.rules = {};
+    if (!d.deleted || typeof d.deleted !== 'object' || Array.isArray(d.deleted)) d.deleted = {}; // що видалено — щоб при обміні з іншим телефоном воно не «воскресло»
+    if (!d.settings.deviceId) d.settings.deviceId = uid();
+    if (d.settings.person === undefined) d.settings.person = '';
+    if (!d.settings.partners || typeof d.settings.partners !== 'object') d.settings.partners = {}; // від кого і коли приймали записи // як розкладати операції з виписки банку
     if (d.settings.onboarded === undefined) d.settings.onboarded = d.transactions.length > 0; // хто вже користується — знайомство не показуємо
     if (!Array.isArray(d.recurring)) d.recurring = [];
     if (!d.plans || typeof d.plans !== 'object' || Array.isArray(d.plans)) d.plans = {};
@@ -176,6 +181,8 @@
   }
 
   function save() {
+    var who = data.settings.person;
+    if (who) data.transactions.forEach(function (t) { if (!t.by) t.by = who; });
     try { localStorage.setItem(KEY, JSON.stringify(data)); syncReminderSchedule(); return true; }
     catch (e) { toast('Не вдалося зберегти! Можливо, закінчилась пам\'ять телефону.', true); return false; }
   }
@@ -625,6 +632,7 @@
     html += '</section>';
 
     html += comparePanel(s);
+    html += whoPanel(ui.month);
 
     // Пріоритети
     if (s.expense > 0) {
@@ -734,10 +742,12 @@
     return '<li class="tx" data-act="edit-tx" data-id="' + t.id + '">' +
       '<i class="dot ' + (t.type === 'income' ? 'p-in' : (c ? PRI[c.priority].cls : '')) + '"></i>' +
       '<div class="tx-main"><div class="tx-cat">' + esc(catLabel(t.categoryId)) + '</div>' +
-      '<div class="tx-sub">' + fmtDate(t.date) + (t.note ? ' · ' + esc(t.note) : '') + '</div></div>' +
+ '<div class="tx-sub">' + fmtDate(t.date) + (t.by && hasPartners() ? ' · 👤 ' + esc(t.by) : '') + (t.note ? ' · ' + esc(t.note) : '') + '</div></div>' +
       '<div class="tx-sum ' + (t.type === 'income' ? 'pos' : 'neg') + '">' + (t.type === 'income' ? '+' : '−') + money(t.amount) + '</div>' +
       (repeat ? '<button class="icon-btn small" data-act="tx-repeat" data-id="' + t.id + '" aria-label="Записати ще раз сьогодні">↻</button>' : '') + '</li>';
   }
+
+  function hasPartners() { return Object.keys(data.settings.partners || {}).length > 0; }
 
   // ----- Швидке додавання -----
   // Що людина вносить найчастіше за останні 90 днів: однакова категорія + сума (+ коментар) — «шаблон в один дотик».
@@ -783,7 +793,7 @@
     toast((lw ? lw + ' · ' : '') + '✓ ' + shortCat(t.categoryId) + ' ' + money0(t.amount), !!lw && lw.charAt(0) === '🔴', {
       label: 'Скасувати', run: function () {
         data.transactions = data.transactions.filter(function (x) { return x.id !== t.id; });
-        save(); render(); toast('Скасовано');
+        markDeleted(t.id); save(); render(); toast('Скасовано');
       }
     });
   }
@@ -985,6 +995,19 @@
           hint('Захищає від сторонніх очей, якщо хтось візьме телефон. Запишіть PIN у надійному місці — відновити його не можна.') +
           '<button class="btn primary" type="submit">Увімкнути PIN</button></form>') +
       '</section>';
+
+    // Спільний бюджет
+    var partners = Object.keys(s.partners || {}).map(function (k) { return s.partners[k]; });
+    html += '<section class="panel form"><h2>👫 Спільний бюджет</h2>' +
+      '<p>Ведете бюджет удвох на різних телефонах? Кожен записує своє, а потім ви обмінюєтесь файлом — і на обох телефонах однакова картина.</p>' +
+      '<label>Ваше ім\'я<input id="personName" type="text" maxlength="20" value="' + esc(s.person || '') + '" placeholder="Напр. Олена"></label>' +
+      hint('Щоб було видно, хто що витратив. Пишеться біля кожного запису.') +
+      '<button class="btn primary" data-act="sync-out">📤 Надіслати свої записи</button>' +
+      hint('Відкриється «Поділитися». Надішліть файл у Viber чи Telegram іншому члену сім\'ї.') +
+      '<button class="btn" data-act="sync-in">📥 Прийняти записи з іншого телефону</button>' +
+      hint('Оберіть файл, який вам надіслали. Нові записи додадуться, однакові не задублюються, ваші записи не зникнуть.') +
+      (partners.length ? '<p class="ok-note">Останній обмін: ' + partners.map(function (x) { return esc(x.name) + ' — ' + fmtDate(localDay(x.at)); }).join(', ') + '</p>' : '') +
+      '<p class="note">💡 Робіть обмін в обидва боки: ви надсилаєте свій файл, вам — свій. Раз на кілька днів достатньо.</p></section>';
 
     // Імпорт з банку
     html += '<section class="panel form"><h2>🏦 Виписка з банку</h2>' +
@@ -1224,6 +1247,157 @@
     toast('Записано операцій: ' + n + ' ✓'); go('home');
   }
 
+  // ----- Спільний бюджет: обмін записами між телефонами -----
+  // Кожен телефон веде свої записи. Раз на кілька днів надсилаєте файл одне одному (Viber, Telegram),
+  // і застосунок зливає записи без дублів. Інтернет-сервер не потрібен, дані йдуть тільки тим, кому ви надіслали.
+  function markDeleted(id) { if (id) data.deleted[id] = Date.now(); }
+
+  function exportSync() {
+    if (!data.settings.person) { toast('Спершу впишіть своє ім\'я в «👫 Спільний бюджет»', true); return; }
+    var pkg = { kind: 'family-budget-sync', v: 1, from: data.settings.person, deviceId: data.settings.deviceId, sent: Date.now(), data: data };
+    var name = 'budget-sync_' + data.settings.person.replace(/[^\wа-яіїєґ-]+/gi, '') + '_' + stamp() + '.json';
+    var blob = new Blob([JSON.stringify(pkg)], { type: 'application/json' });
+    if (canShareFiles()) {
+      var file = new File([blob], name, { type: 'application/json' });
+      navigator.share({ files: [file], title: 'Записи бюджету від ' + data.settings.person })
+        .then(function () { toast('Надіслано ✓ Нехай інший телефон натисне «Прийняти записи»'); })
+        .catch(function (e) { if (e && e.name !== 'AbortError') deliver(blob, name); });
+    } else deliver(blob, name);
+  }
+
+  function mergeSync(pkg) {
+    var inc = normalize(pkg.data), res = { tx: 0, upd: 0, del: 0, contrib: 0, goals: 0, cats: 0, plan: 0 };
+    var catMap = {}, goalMap = {};
+    function key(c, list) { var par = c.parentId ? list.filter(function (x) { return x.id === c.parentId; })[0] : null; return c.type + '|' + (par ? par.name.toLowerCase() + '›' : '') + c.name.toLowerCase(); }
+    var localByKey = {};
+    data.categories.forEach(function (c) { localByKey[key(c, data.categories)] = c; });
+    // спершу головні категорії, потім підкатегорії — щоб знати нового «батька»
+    inc.categories.slice().sort(function (a, b) { return (a.parentId ? 1 : 0) - (b.parentId ? 1 : 0); }).forEach(function (c) {
+      if (catById(c.id)) { catMap[c.id] = c.id; return; }
+      var hit = localByKey[key(c, inc.categories)];
+      if (hit) { catMap[c.id] = hit.id; return; }
+      if (data.deleted[c.id]) return;
+      var nc = Object.assign({}, c, { parentId: c.parentId ? (catMap[c.parentId] || null) : null });
+      data.categories.push(nc); catMap[c.id] = nc.id; localByKey[key(nc, data.categories)] = nc; res.cats++;
+    });
+    function mapCat(id) { return id ? (catMap[id] || (catById(id) ? id : '')) : ''; }
+
+    inc.goals.forEach(function (g) {
+      var hit = data.goals.filter(function (x) { return x.id === g.id; })[0] || data.goals.filter(function (x) { return x.name.toLowerCase() === g.name.toLowerCase() && x.currency === g.currency; })[0];
+      if (hit) { goalMap[g.id] = hit.id; if (!hit.target && g.target) hit.target = g.target; if (!hit.deadline && g.deadline) hit.deadline = g.deadline; return; }
+      if (data.deleted[g.id]) return;
+      data.goals.push(Object.assign({}, g)); goalMap[g.id] = g.id; res.goals++;
+    });
+
+    // видалене на тому телефоні — прибираємо і тут
+    Object.keys(inc.deleted).forEach(function (id) {
+      if (!data.deleted[id] || data.deleted[id] < inc.deleted[id]) data.deleted[id] = inc.deleted[id];
+    });
+    var before = data.transactions.length + data.contributions.length;
+    data.transactions = data.transactions.filter(function (t) { return !(data.deleted[t.id] && data.deleted[t.id] >= (t.updated || t.created || 0)); });
+    data.contributions = data.contributions.filter(function (c) { return !data.deleted[c.id]; });
+    res.del = before - data.transactions.length - data.contributions.length;
+
+    var byId = {}, keys = {}, added = {};
+    data.transactions.forEach(function (t) { byId[t.id] = t; if (t.importKey) keys[t.importKey] = 1; });
+    inc.transactions.forEach(function (t) {
+      if (data.deleted[t.id]) return;
+      var cat = mapCat(t.categoryId); if (!cat) return;
+      var loc = byId[t.id];
+      var copy = Object.assign({}, t, { categoryId: cat, by: t.by || pkg.from });
+      if (loc) {
+        if ((t.updated || 0) > (loc.updated || 0)) { Object.assign(loc, copy); res.upd++; }
+        return;
+      }
+      if (t.importKey && keys[t.importKey]) return; // ту саму виписку імпортували на обох телефонах
+      data.transactions.push(copy); byId[t.id] = copy; added[t.id] = 1; res.tx++;
+    });
+
+    var cIds = {}; data.contributions.forEach(function (c) { cIds[c.id] = 1; });
+    inc.contributions.forEach(function (c) {
+      if (cIds[c.id] || data.deleted[c.id] || !goalMap[c.goalId]) return;
+      if (c.initial && data.contributions.some(function (x) { return x.initial && x.goalId === goalMap[c.goalId]; })) return;
+      data.contributions.push(Object.assign({}, c, { goalId: goalMap[c.goalId] })); res.contrib++;
+    });
+
+    inc.recurring.forEach(function (r) {
+      if (data.deleted[r.id] || data.recurring.some(function (x) { return x.id === r.id || x.name.toLowerCase() === r.name.toLowerCase(); })) return;
+      data.recurring.push(Object.assign({}, r, { categoryId: mapCat(r.categoryId) })); res.plan++;
+    });
+    Object.keys(inc.plans).forEach(function (m) {
+      var ip = inc.plans[m], lp = getPlan(m, true);
+      if (!lp.income && ip.income) lp.income = ip.income;
+      ip.items.forEach(function (it) {
+        if (data.deleted[it.id] || lp.items.some(function (x) { return x.id === it.id; })) return;
+        lp.items.push(Object.assign({}, it, { categoryId: mapCat(it.categoryId) })); res.plan++;
+      });
+      // «оплачено»: перемагає новіша позначка
+      var ia = ip.paidAt || {}; lp.paidAt = lp.paidAt || {};
+      Object.keys(ip.paid).forEach(function (id) {
+        // обидва позначили «оплачено» — лишаємо одну витрату, а не дві
+        var itx = ip.paid[id];
+        if (lp.paid[id] !== undefined && itx && added[itx] && itx !== lp.paid[id]) {
+          data.transactions = data.transactions.filter(function (t) { return t.id !== itx; });
+          delete byId[itx]; delete added[itx]; res.tx--;
+        }
+      });
+      Object.keys(ip.paid).concat(Object.keys(ia)).forEach(function (id) {
+        var it = Math.abs(ia[id] || 1), lt = Math.abs(lp.paidAt[id] || 0);
+        if (it <= lt) return;
+        if (ip.paid[id] !== undefined && (ia[id] || 1) > 0) lp.paid[id] = byId[ip.paid[id]] ? ip.paid[id] : '';
+        else delete lp.paid[id];
+        lp.paidAt[id] = ia[id] || 1;
+      });
+    });
+    Object.keys(inc.rules).forEach(function (k) { if (!data.rules[k]) { var c = mapCat(inc.rules[k]); if (c) data.rules[k] = c; } });
+    data.settings.partners[pkg.deviceId] = { name: pkg.from, at: Date.now() };
+    return res;
+  }
+
+  function importSync(file) {
+    var r = new FileReader();
+    r.onload = function () {
+      var pkg;
+      try { pkg = JSON.parse(r.result); } catch (e) { toast('Це не файл із записами бюджету', true); return; }
+      if (!pkg || pkg.kind !== 'family-budget-sync' || !isValidData(pkg.data)) {
+        if (isValidData(pkg)) toast('Це резервна копія, а не файл обміну. Її відновлюють кнопкою «Відновити з резервної копії»', true);
+        else toast('Файл не від цього застосунку', true);
+        return;
+      }
+      if (pkg.deviceId === data.settings.deviceId) { toast('Це ваш власний файл. Прийняти треба файл з іншого телефону', true); return; }
+      var res = mergeSync(pkg);
+      save();
+      var parts = [];
+      if (res.tx) parts.push('нових записів: ' + res.tx);
+      if (res.upd) parts.push('змінено: ' + res.upd);
+      if (res.del) parts.push('видалено: ' + res.del);
+      if (res.contrib) parts.push('поповнень цілей: ' + res.contrib);
+      if (res.plan) parts.push('пунктів плану: ' + res.plan);
+      toast(parts.length ? 'Від ' + pkg.from + ' — ' + parts.join(', ') + ' ✓' : 'Усе вже збігається, нового нічого ✓');
+      go('home');
+    };
+    r.onerror = function () { toast('Не вдалося прочитати файл', true); };
+    r.readAsText(file);
+  }
+
+  // Хто скільки витратив (коли записи від двох і більше людей)
+  function whoPanel(month) {
+    var by = {}, n = 0;
+    data.transactions.forEach(function (t) {
+      if (t.type !== 'expense' || t.date.slice(0, 7) !== month) return;
+      var w = t.by || 'Не вказано';
+      if (!by[w]) { by[w] = 0; n++; }
+      by[w] += t.amount;
+    });
+    if (n < 2) return '';
+    var total = Object.keys(by).reduce(function (q, k) { return q + by[k]; }, 0) || 1;
+    var rows = Object.keys(by).sort(function (a, b) { return by[b] - by[a]; });
+    return '<section class="panel"><h2>👫 Хто скільки витратив</h2><div class="bars">' + rows.map(function (w) {
+      return '<div class="bar-row"><div class="bar-head"><span>' + esc(w) + '</span><span>' + money0(by[w]) + ' <small>(' + Math.round(by[w] / total * 100) + '%)</small></span></div>' +
+        '<div class="bar"><div class="fill cmp-now" data-w="' + (by[w] / total * 100) + '"></div></div></div>';
+    }).join('') + '</div></section>';
+  }
+
   // ----- План на місяць -----
   // Обов'язкові платежі (data.recurring) повторюються щомісяця самі.
   // Разові покупки, очікуваний дохід і позначки «оплачено» зберігаються окремо для кожного місяця (data.plans['РРРР-ММ']).
@@ -1402,6 +1576,7 @@
     var x = findPlanEntry(id); if (!x) return;
     var isRec = data.recurring.indexOf(x) >= 0;
     if (!confirm(isRec ? 'Видалити «' + x.name + '» з обов\'язкових платежів? Він зникне з усіх місяців.' : 'Видалити «' + x.name + '» з плану?')) return;
+    markDeleted(id);
     if (isRec) data.recurring = data.recurring.filter(function (r) { return r.id !== id; });
     else { var p = getPlan(ui.planMonth); p.items = p.items.filter(function (r) { return r.id !== id; }); delete p.paid[id]; }
     save(); ui.planForm = null; toast('Видалено'); render();
@@ -1416,8 +1591,9 @@
       if (tx) {
         if (!confirm('Зняти позначку «оплачено»? Запис витрати ' + money(tx.amount) + ' від ' + fmtDate(tx.date) + ' теж буде видалено.')) return;
         data.transactions = data.transactions.filter(function (t) { return t.id !== tx.id; });
+        markDeleted(tx.id);
       }
-      delete p.paid[id];
+      delete p.paid[id]; p.paidAt = p.paidAt || {}; p.paidAt[id] = -Date.now();
       save(); toast('Позначку знято'); render(); return;
     }
     var txId = '';
@@ -1426,7 +1602,7 @@
       var t = { id: uid(), created: Date.now(), type: 'expense', amount: x.amount, categoryId: x.categoryId, date: d, note: x.name + ' (за планом)' };
       data.transactions.push(t); txId = t.id;
     }
-    p.paid[id] = txId;
+    p.paid[id] = txId; p.paidAt = p.paidAt || {}; p.paidAt[id] = Date.now();
     save(); toast(txId ? 'Оплачено ✓ Записано у витрати' : 'Оплачено ✓'); render();
   }
 
@@ -1486,6 +1662,8 @@
       case 'share-json': shareJson(); break;
       case 'plan-income-suggest': setPlanIncome(+el.getAttribute('data-sum') || 0); break;
       case 'go-add': go('add'); break;
+      case 'sync-out': exportSync(); break;
+      case 'sync-in': $('#syncFile').value = ''; $('#syncFile').click(); break;
       case 'bank-file': $('#bankFile').value = ''; $('#bankFile').click(); break;
       case 'imp-do': doImport(); break;
       case 'imp-cancel': ui.imp = null; go('settings'); break;
@@ -1521,13 +1699,13 @@
       case 'del-tx':
         if (confirm('Видалити цей запис?')) {
           data.transactions = data.transactions.filter(function (t) { return t.id !== id; });
-          save(); ui.editId = null; toast('Запис видалено'); render();
+          markDeleted(id); save(); ui.editId = null; toast('Запис видалено'); render();
         }
         break;
       case 'del-contrib':
         if (confirm('Видалити це поповнення цілі?')) {
           data.contributions = data.contributions.filter(function (c) { return c.id !== id; });
-          save(); toast('Видалено'); render();
+          markDeleted(id); save(); toast('Видалено'); render();
         }
         break;
       case 'new-goal': ui.newGoal = true; ui.goalForm = null; render(); break;
@@ -1537,6 +1715,8 @@
       case 'goal-cancel': ui.goalForm = null; ui.newGoal = false; render(); break;
       case 'goal-del':
         if (confirm('Видалити ціль разом з історією поповнень?')) {
+          markDeleted(id);
+          data.contributions.forEach(function (c) { if (c.goalId === id) markDeleted(c.id); });
           data.goals = data.goals.filter(function (g) { return g.id !== id; });
           data.contributions = data.contributions.filter(function (c) { return c.goalId !== id; });
           save(); ui.goalForm = null; toast('Ціль видалено'); render();
@@ -1602,6 +1782,14 @@
       data.settings.eurRate = r; save(); toast('Курс збережено'); return;
     }
     if (el.id === 'restoreFile') { if (el.files && el.files[0]) importJson(el.files[0]); return; }
+    if (el.id === 'syncFile') { if (el.files && el.files[0]) importSync(el.files[0]); return; }
+    if (el.id === 'personName') {
+      var pn = el.value.trim().slice(0, 20);
+      var first = !data.settings.person;
+      data.settings.person = pn;
+      if (first && pn) data.transactions.forEach(function (t) { if (!t.by) t.by = pn; }); // старі записи зроблені на цьому телефоні
+      save(); toast(pn ? 'Ім\'я збережено ✓' : 'Ім\'я прибрано'); return;
+    }
     if (el.id === 'bankFile') { if (el.files && el.files[0]) startImport(el.files[0]); return; }
     if (ui.imp && el.hasAttribute('data-imp-on')) {
       var ir = ui.imp.rows[+el.getAttribute('data-imp-on')]; if (ir) ir.on = el.checked;
@@ -1646,7 +1834,7 @@
     var rec = { type: f.type.value, amount: round2(amount), categoryId: f.categoryId.value, date: f.date.value, note: f.note.value.trim() };
     if (ui.editId) {
       var t = data.transactions.filter(function (x) { return x.id === ui.editId; })[0];
-      if (t) Object.assign(t, rec);
+      if (t) { Object.assign(t, rec); t.updated = Date.now(); }
       ui.editId = null;
       if (save()) toast('Зміни збережено ✓');
     } else {
