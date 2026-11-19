@@ -14,7 +14,7 @@
     save: { label: 'Можна економити', short: 'Економія', cls: 'p-save', hint: 'Можна скоротити без шкоди для сім\'ї' }
   };
   var MONTHS = ['Січень', 'Лютий', 'Березень', 'Квітень', 'Травень', 'Червень', 'Липень', 'Серпень', 'Вересень', 'Жовтень', 'Листопад', 'Грудень'];
-  var TITLES = { home: 'Огляд місяця', add: 'Додати запис', history: 'Історія', plan: 'План на місяць', goals: 'Накопичення', settings: 'Налаштування' };
+  var TITLES = { home: 'Огляд місяця', add: 'Додати запис', history: 'Історія', plan: 'План на місяць', goals: 'Накопичення', settings: 'Налаштування', import: 'Імпорт з банку' };
 
   // ---------------- Утиліти ----------------
   function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
@@ -44,15 +44,57 @@
     if (!/^-?\d*\.?\d+$/.test(s)) return NaN;
     return parseFloat(s);
   }
+  // Сума з простими діями: «120+45», «3*60», «500-120». Нічого не виконує як код — лише рахує числа.
+  function calcNum(v) {
+    var s = String(v == null ? '' : v).replace(/[\s ]/g, '').replace(/,/g, '.').replace(/[×xх]/gi, '*').replace(/[÷:]/g, '/').replace(/[−–]/g, '-');
+    if (!s || !/^[\d.+\-*/()]+$/.test(s)) return NaN;
+    var i = 0;
+    function num() {
+      var m = /^\d*\.?\d+|^\d+\.?/.exec(s.slice(i));
+      if (!m) throw 0;
+      i += m[0].length; return parseFloat(m[0]);
+    }
+    function factor() {
+      if (s[i] === '-') { i++; return -factor(); }
+      if (s[i] === '(') { i++; var v = expr(); if (s[i] !== ')') throw 0; i++; return v; }
+      return num();
+    }
+    function term() {
+      var v = factor();
+      while (s[i] === '*' || s[i] === '/') { var op = s[i++], r = factor(); v = op === '*' ? v * r : v / r; }
+      return v;
+    }
+    function expr() {
+      var v = term();
+      while (s[i] === '+' || s[i] === '-') { var op = s[i++], r = term(); v = op === '+' ? v + r : v - r; }
+      return v;
+    }
+    try { var r = expr(); return i === s.length && isFinite(r) ? r : NaN; } catch (e) { return NaN; }
+  }
+  function isExpr(v) { return /\d\s*[+\-*/×x−]\s*[\d(]/i.test(String(v || '').replace(/^\s*-/, '')); }
 
   var toastTimer;
-  function toast(msg, bad) {
+  var toastAction = null;
+  // action — необов'язкова кнопка в повідомленні, напр. { label: 'Скасувати', run: fn }
+  function toast(msg, bad, action) {
     var t = $('#toast');
     t.textContent = msg;
-    t.className = 'toast show' + (bad ? ' bad' : '');
+    toastAction = action || null;
+    if (action) {
+      var b = document.createElement('button');
+      b.type = 'button'; b.className = 'toast-btn'; b.textContent = action.label;
+      t.appendChild(b);
+    }
+    t.className = 'toast show' + (bad ? ' bad' : '') + (action ? ' has-act' : '');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { t.className = 'toast'; }, 2600);
+    toastTimer = setTimeout(function () { t.className = 'toast'; toastAction = null; }, action ? 5000 : 2600);
   }
+  document.getElementById('toast').addEventListener('click', function (e) {
+    if (!e.target.closest('.toast-btn') || !toastAction) return;
+    var a = toastAction; toastAction = null;
+    $('#toast').className = 'toast';
+    a.run();
+  });
 
   // ---------------- Дані ----------------
   function defaultData() {
@@ -81,7 +123,7 @@
     add('Інше', 'expense', 'important', []);
     return {
       version: 1,
-      settings: { eurRate: 0, pinHash: '', pinSalt: '', remindDays: 2, lastBackup: 0 },
+      settings: { eurRate: 0, pinHash: '', pinSalt: '', remindDays: 2, lastBackup: 0, theme: 'auto', onboarded: false, deviceId: uid(), person: '', partners: {} },
       categories: cats,
       transactions: [],
       goals: [
@@ -91,7 +133,11 @@
       ],
       contributions: [],
       recurring: [],
-      plans: {}
+      plans: {},
+      rules: {},
+      deleted: {},
+      accounts: [],
+      transfers: []
     };
   }
 
@@ -99,6 +145,15 @@
   function normalize(d) {
     if (d.settings.remindDays === undefined) d.settings.remindDays = 2;
     if (!d.settings.lastBackup) d.settings.lastBackup = 0;
+    if (!d.settings.theme) d.settings.theme = 'auto';
+    if (!d.rules || typeof d.rules !== 'object' || Array.isArray(d.rules)) d.rules = {};
+    if (!d.deleted || typeof d.deleted !== 'object' || Array.isArray(d.deleted)) d.deleted = {}; // що видалено — щоб при обміні з іншим телефоном воно не «воскресло»
+    if (!d.settings.deviceId) d.settings.deviceId = uid();
+    if (!Array.isArray(d.accounts)) d.accounts = [];   // рахунки: картка, готівка… (вмикаються в Опціях)
+    if (!Array.isArray(d.transfers)) d.transfers = []; // перекази між своїми рахунками — це не витрата і не дохід
+    if (d.settings.person === undefined) d.settings.person = '';
+    if (!d.settings.partners || typeof d.settings.partners !== 'object') d.settings.partners = {}; // від кого і коли приймали записи // як розкладати операції з виписки банку
+    if (d.settings.onboarded === undefined) d.settings.onboarded = d.transactions.length > 0; // хто вже користується — знайомство не показуємо
     if (!Array.isArray(d.recurring)) d.recurring = [];
     if (!d.plans || typeof d.plans !== 'object' || Array.isArray(d.plans)) d.plans = {};
     Object.keys(d.plans).forEach(function (m) {
@@ -130,6 +185,8 @@
   }
 
   function save() {
+    var who = data.settings.person;
+    if (who) data.transactions.forEach(function (t) { if (!t.by) t.by = who; });
     try { localStorage.setItem(KEY, JSON.stringify(data)); syncReminderSchedule(); return true; }
     catch (e) { toast('Не вдалося зберегти! Можливо, закінчилась пам\'ять телефону.', true); return false; }
   }
@@ -139,6 +196,39 @@
 
   // Просимо браузер не видаляти наші дані автоматично
   if (navigator.storage && navigator.storage.persist) { navigator.storage.persist().catch(function () { }); }
+
+  // ---------------- Тема (світла / темна) ----------------
+  function applyTheme() {
+    var th = data.settings.theme, root = document.documentElement;
+    if (th === 'light' || th === 'dark') root.setAttribute('data-theme', th); else root.removeAttribute('data-theme');
+    var dark = th === 'dark' || (th !== 'light' && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches);
+    var m = document.querySelector('meta[name="theme-color"]'); if (m) m.setAttribute('content', dark ? '#23513b' : '#2f6f4f');
+  }
+  applyTheme();
+  if (window.matchMedia) { var mq = matchMedia('(prefers-color-scheme: dark)'); if (mq.addEventListener) mq.addEventListener('change', applyTheme); }
+
+  // ---------------- Знайомство при першому запуску ----------------
+  var ONBOARD = [
+    { icon: '⚡', title: 'Витрата — за 3 секунди', text: 'Натисніть <b>➕ Додати</b>, впишіть суму й оберіть категорію. Те, що купуєте часто, з\'явиться кнопками — далі записуєте одним дотиком.' },
+    { icon: '📝', title: 'План і нагадування', text: 'У <b>📝 Плані</b> впишіть зарплату й обов\'язкові платежі. Застосунок покаже, скільки лишається на все інше, і нагадає, коли час платити.' },
+    { icon: '🎯', title: 'Ліміти й цілі', text: 'Задайте ліміти на категорії — смужка пожовтіє біля межі. У <b>🎯 Цілях</b> збирайте на відпустку чи ремонт і бачте, коли зберете.' },
+    { icon: '🛡', title: 'Дані тільки у вас', text: 'Без реєстрації і без прив\'язки банку. Усе зберігається <b>лише на цьому телефоні</b>. Раз на тиждень робіть резервну копію — застосунок нагадає.' }
+  ];
+  var onboardStep = 0;
+  function showOnboarding() {
+    var o = $('#onboard'); if (!o) return;
+    var st = ONBOARD[onboardStep], last = onboardStep === ONBOARD.length - 1;
+    o.innerHTML = '<div class="ob-box" role="dialog" aria-modal="true" aria-labelledby="obTitle">' +
+      '<div class="ob-icon">' + st.icon + '</div><h2 id="obTitle">' + st.title + '</h2><p>' + st.text + '</p>' +
+      '<div class="ob-dots">' + ONBOARD.map(function (_, i) { return '<i class="' + (i === onboardStep ? 'on' : '') + '"></i>'; }).join('') + '</div>' +
+      '<button class="btn primary big" data-act="ob-next">' + (last ? 'Почати' : 'Далі') + '</button>' +
+      (last ? '' : '<button class="btn ob-skip" data-act="ob-done">Пропустити</button>') + '</div>';
+    o.hidden = false;
+  }
+  function finishOnboarding() {
+    data.settings.onboarded = true; save();
+    $('#onboard').hidden = true;
+  }
 
   // ---------------- Категорії ----------------
   function catById(id) { for (var i = 0; i < data.categories.length; i++) if (data.categories[i].id === id) return data.categories[i]; return null; }
@@ -226,6 +316,11 @@
   }
 
   function afterRender() {
+    document.querySelectorAll('img[data-photo]').forEach(function (im) {
+      photoGet(im.getAttribute('data-photo')).then(function (b) {
+        if (b) { im.src = URL.createObjectURL(b); im.setAttribute('data-act', 'photo-view'); } else im.remove();
+      });
+    });
     // ширини смужок (через JS, щоб не порушувати політику безпеки)
     document.querySelectorAll('[data-w]').forEach(function (el) {
       el.style.width = Math.max(0, Math.min(100, +el.getAttribute('data-w'))) + '%';
@@ -518,8 +613,10 @@
       card('Відкладено', s.saved, 'c-sav', 'Покладено на цілі') +
       card('Залишок', s.left, s.left < 0 ? 'c-neg' : 'c-left', s.left < 0 ? 'Витратили більше, ніж заробили' : 'Вільні гроші') +
       '</section>';
+    if (s.count) html += '<button class="btn small-btn share-card" data-act="month-card">📸 Підсумок місяця картинкою — переслати у Viber чи Telegram</button>';
 
     if (ui.month === curMonth()) html += remindPanel() + backupNudge();
+    html += accountsPanel();
     html += homePlanPanel();
     html += limitsPanel(s);
 
@@ -546,6 +643,7 @@
     html += '</section>';
 
     html += comparePanel(s);
+    html += whoPanel(ui.month);
 
     // Пріоритети
     if (s.expense > 0) {
@@ -615,13 +713,20 @@
       '<button type="button" data-act="type" data-type="income" class="' + (type === 'income' ? 'on in' : '') + '">+ Дохід</button></div>' +
       hint(type === 'expense' ? 'Витрата — коли гроші пішли з гаманця чи картки.' : 'Дохід — коли гроші прийшли: зарплата, премія, подарунок.');
 
-    html += '<label>Сума, ₴<input name="amount" type="text" inputmode="decimal" required placeholder="Напр. 350" value="' + (t ? t.amount : '') + '"></label>' +
-      hint('Тільки цифри, у гривнях. Копійки — через кому: 125,50');
+    if (!t) html += quickPanel(type);
+
+    html += '<label>Сума, ₴<input name="amount" id="txAmount" type="text" inputmode="decimal" required placeholder="Напр. 350" value="' + (t ? t.amount : '') + '"></label>' +
+      '<div class="calc-row" role="group" aria-label="Калькулятор">' +
+      ['+', '−', '×', '÷'].map(function (o) { return '<button type="button" class="calc-btn" data-act="calc-op" data-op="' + o + '">' + o + '</button>'; }).join('') +
+      '<button type="button" class="calc-btn" data-act="calc-eq">=</button><button type="button" class="calc-btn" data-act="calc-clr" aria-label="Стерти">⌫</button></div>' +
+      '<p class="hint calc-res" id="calcRes">Копійки — через кому: 125,50. Кнопки «+ − × ÷» — щоб скласти кілька чеків одразу.</p>';
 
     html += '<label>Категорія<select name="categoryId" required>' + categoryOptions(type, t ? t.categoryId : '') + '</select></label>' +
       hint(type === 'expense'
         ? 'Оберіть, на що витратили. Кольорова позначка категорії: 🔴 критично, 🟡 важливо, 🟢 можна економити. Змінити список можна в «⚙️ Опціях».'
         : 'Звідки гроші. Зазвичай це «Зарплата».');
+
+    if (accOn()) html += '<label>' + (type === 'expense' ? 'З якого рахунку' : 'На який рахунок') + '<select name="accountId">' + accOptions(t ? txAcc(t) : (ui.lastAcc && accById(ui.lastAcc) ? ui.lastAcc : defAcc())) + '</select></label>';
 
     html += '<label>Дата<input name="date" type="date" required value="' + (t ? t.date : (ui.month === curMonth() ? today() : ui.month + '-01')) + '"></label>' +
       hint('Коли це було. Сьогоднішня дата стоїть сама.');
@@ -629,28 +734,95 @@
     html += '<label>Коментар (не обов\'язково)<input name="note" type="text" maxlength="120" placeholder="Напр. АТБ, подарунок мамі" value="' + esc(t ? t.note : '') + '"></label>' +
       hint('Коротка нотатка, щоб згадати потім. Можна залишити порожнім.');
 
+    html += '<div class="photo-box"><div id="photoPrev" class="photo-prev">' + (t && t.photo ? '<img data-photo="' + t.id + '" alt="Фото чека">' : '') + '</div>' +
+      '<div class="btn-row"><button class="btn" type="button" data-act="photo-pick">📷 ' + (t && t.photo ? 'Замінити фото' : 'Фото чека') + '</button>' +
+      '<button class="btn" type="button" data-act="photo-del" id="photoDel"' + (t && t.photo ? '' : ' hidden') + '>Прибрати фото</button></div>' +
+      hint('Не обов\'язково. Фото зберігається тільки на цьому телефоні і не потрапляє в резервну копію.') + '</div>';
+
     html += '<input type="hidden" name="type" value="' + type + '">' +
       '<button class="btn primary big" type="submit">' + (t ? 'Зберегти зміни' : 'Зберегти') + '</button>';
     if (t) html += '<button class="btn" type="button" data-act="cancel-edit">Скасувати</button>' +
       '<button class="btn danger" type="button" data-act="del-tx" data-id="' + t.id + '">Видалити запис</button>';
     html += '</form>';
+    if (!t) html += '<button class="btn small-btn bank-link" data-act="bank-file">🏦 Завантажити виписку з банку замість ручного вводу</button>';
 
     // Останні записи для швидкої перевірки
     if (!t) {
       var last = data.transactions.slice().sort(function (a, b) { return (b.created || 0) - (a.created || 0); }).slice(0, 5);
-      if (last.length) html += '<section class="panel"><h2>Останні записи</h2><ul class="tx-list">' + last.map(txItem).join('') + '</ul>' +
-        hint('Натисніть на запис, щоб виправити або видалити його.') + '</section>';
+      if (last.length) html += '<section class="panel"><h2>Останні записи</h2><ul class="tx-list">' + last.map(function (x) { return txItem(x, true); }).join('') + '</ul>' +
+        hint('Натисніть на запис, щоб виправити або видалити його. Кнопка ↻ — записати те саме ще раз сьогодні.') + '</section>';
     }
     return html;
   }
 
-  function txItem(t) {
+  function txItem(t, repeat) {
     var c = catById(t.categoryId);
     return '<li class="tx" data-act="edit-tx" data-id="' + t.id + '">' +
       '<i class="dot ' + (t.type === 'income' ? 'p-in' : (c ? PRI[c.priority].cls : '')) + '"></i>' +
       '<div class="tx-main"><div class="tx-cat">' + esc(catLabel(t.categoryId)) + '</div>' +
-      '<div class="tx-sub">' + fmtDate(t.date) + (t.note ? ' · ' + esc(t.note) : '') + '</div></div>' +
-      '<div class="tx-sum ' + (t.type === 'income' ? 'pos' : 'neg') + '">' + (t.type === 'income' ? '+' : '−') + money(t.amount) + '</div></li>';
+ '<div class="tx-sub">' + fmtDate(t.date) + (t.by && hasPartners() ? ' · 👤 ' + esc(t.by) : '') + (data.accounts.length > 1 && accById(txAcc(t)) ? ' · ' + esc(accById(txAcc(t)).name) : '') +  (t.note ? ' · ' + esc(t.note) : '') + (t.photo ? ' · 📎' : '') + '</div></div>' +
+      '<div class="tx-sum ' + (t.type === 'income' ? 'pos' : 'neg') + '">' + (t.type === 'income' ? '+' : '−') + money(t.amount) + '</div>' +
+      (repeat ? '<button class="icon-btn small" data-act="tx-repeat" data-id="' + t.id + '" aria-label="Записати ще раз сьогодні">↻</button>' : '') + '</li>';
+  }
+
+  function hasPartners() { return Object.keys(data.settings.partners || {}).length > 0; }
+
+  // ----- Швидке додавання -----
+  // Що людина вносить найчастіше за останні 90 днів: однакова категорія + сума (+ коментар) — «шаблон в один дотик».
+  function quickTemplates(type) {
+    var from = localDay(Date.now() - 90 * 86400000), groups = {}, cats = {};
+    data.transactions.forEach(function (t) {
+      if (t.type !== type || t.date < from || !catById(t.categoryId)) return;
+      var k = t.categoryId + '|' + t.amount + '|' + (t.note || '').toLowerCase();
+      var g = groups[k] || (groups[k] = { categoryId: t.categoryId, amount: t.amount, note: t.note || '', n: 0, last: '' });
+      g.n++; if (t.date > g.last) g.last = t.date;
+      cats[t.categoryId] = (cats[t.categoryId] || 0) + 1;
+    });
+    var tpl = Object.keys(groups).map(function (k) { return groups[k]; }).filter(function (g) { return g.n >= 2; })
+      .sort(function (a, b) { return b.n - a.n || (b.last > a.last ? 1 : -1); }).slice(0, 6);
+    var used = {}; tpl.forEach(function (g) { used[g.categoryId] = 1; });
+    var catChips = Object.keys(cats).filter(function (id) { return !used[id]; })
+      .sort(function (a, b) { return cats[b] - cats[a]; }).slice(0, Math.max(0, 8 - tpl.length));
+    return { tpl: tpl, cats: catChips };
+  }
+
+  function shortCat(id) { var c = catById(id); return c ? c.name : ''; }
+
+  function quickPanel(type) {
+    var q = quickTemplates(type);
+    if (!q.tpl.length && !q.cats.length) return '';
+    var html = '<div class="quick"><div class="quick-t">⚡ ' + (q.tpl.length ? 'Часті ' + (type === 'expense' ? 'витрати' : 'доходи') + ' — один дотик, і записано' : 'Часті категорії') + '</div><div class="chips">';
+    html += q.tpl.map(function (g, i) {
+      return '<button type="button" class="chip" data-act="quick-save" data-i="' + i + '"><b>' + money0(g.amount) + '</b> ' + esc(g.note || shortCat(g.categoryId)) + '</button>';
+    }).join('');
+    html += q.cats.map(function (id) {
+      return '<button type="button" class="chip soft" data-act="quick-cat" data-id="' + id + '">' + esc(shortCat(id)) + '</button>';
+    }).join('');
+    return html + '</div></div>';
+  }
+
+  function quickAdd(src, date) {
+    var t = { id: uid(), created: Date.now(), type: src.type, amount: src.amount, categoryId: src.categoryId, date: date || today(), note: src.note || '' };
+    if (accOn()) t.accountId = src.accountId && accById(src.accountId) ? src.accountId : (ui.lastAcc && accById(ui.lastAcc) ? ui.lastAcc : defAcc());
+    data.transactions.push(t);
+    var lw = limitToast(t);
+    if (!save()) return;
+    ui.month = t.date.slice(0, 7);
+    render();
+    toast((lw ? lw + ' · ' : '') + '✓ ' + shortCat(t.categoryId) + ' ' + money0(t.amount), !!lw && lw.charAt(0) === '🔴', {
+      label: 'Скасувати', run: function () {
+        data.transactions = data.transactions.filter(function (x) { return x.id !== t.id; });
+        markDeleted(t.id); save(); render(); toast('Скасовано');
+      }
+    });
+  }
+
+  function calcShow() {
+    var i = $('#txAmount'), r = $('#calcRes'); if (!i || !r) return;
+    if (!isExpr(i.value)) { r.classList.remove('on'); return; }
+    var v = calcNum(i.value);
+    r.textContent = isNaN(v) ? 'Перевірте приклад: ' + i.value : '= ' + money(v);
+    r.classList.add('on');
   }
 
   // ----- Історія -----
@@ -796,9 +968,17 @@
   // ----- Налаштування -----
   function viewSettings() {
     var s = data.settings;
-    var html = '<section class="panel form"><h2>💶 Курс євро</h2>' +
+    var th = s.theme || 'auto';
+    var html = '<section class="panel"><h2>🎨 Вигляд</h2><div class="seg-ctl seg3" role="group" aria-label="Тема">' +
+      [['auto', '🌓 Як у телефоні'], ['light', '☀️ Світла'], ['dark', '🌙 Темна']].map(function (o) {
+        return '<button type="button" data-act="theme" data-theme="' + o[0] + '" class="' + (th === o[0] ? 'on' : '') + '">' + o[1] + '</button>';
+      }).join('') + '</div>' + hint('«Як у телефоні» — вдень світла, вночі темна, якщо так налаштовано в телефоні.') +
+      '<button class="btn small-btn" data-act="ob-again">👋 Показати знайомство ще раз</button></section>';
+    html += '<section class="panel form"><h2>💶 Курс євро</h2>' +
       '<label>1 € = ? ₴<input id="eurRate" type="text" inputmode="decimal" value="' + (s.eurRate || '') + '" placeholder="Напр. 45,50"></label>' +
-      hint('Вписуйте вручну, за яким курсом купуєте євро (з банку чи обмінника). Застосунок сам в інтернет не ходить.') + '</section>';
+      hint('Вписуйте, за яким курсом купуєте євро в банку чи обміннику.') +
+      '<button class="btn" data-act="rate-nbu">🏛 Взяти сьогоднішній курс НБУ</button>' +
+      hint('Потрібен інтернет. Застосунок лише дізнається курс — ваші записи нікуди не надсилаються.') + '</section>';
 
     // Нагадування
     var perm = notifySupported() ? Notification.permission : 'unsupported';
@@ -837,6 +1017,28 @@
           '<button class="btn primary" type="submit">Увімкнути PIN</button></form>') +
       '</section>';
 
+    html += accountsSettings();
+
+    // Спільний бюджет
+    var partners = Object.keys(s.partners || {}).map(function (k) { return s.partners[k]; });
+    html += '<section class="panel form"><h2>👫 Спільний бюджет</h2>' +
+      '<p>Ведете бюджет удвох на різних телефонах? Кожен записує своє, а потім ви обмінюєтесь файлом — і на обох телефонах однакова картина.</p>' +
+      '<label>Ваше ім\'я<input id="personName" type="text" maxlength="20" value="' + esc(s.person || '') + '" placeholder="Напр. Олена"></label>' +
+      hint('Щоб було видно, хто що витратив. Пишеться біля кожного запису.') +
+      '<button class="btn primary" data-act="sync-out">📤 Надіслати свої записи</button>' +
+      hint('Відкриється «Поділитися». Надішліть файл у Viber чи Telegram іншому члену сім\'ї.') +
+      '<button class="btn" data-act="sync-in">📥 Прийняти записи з іншого телефону</button>' +
+      hint('Оберіть файл, який вам надіслали. Нові записи додадуться, однакові не задублюються, ваші записи не зникнуть.') +
+      (partners.length ? '<p class="ok-note">Останній обмін: ' + partners.map(function (x) { return esc(x.name) + ' — ' + fmtDate(localDay(x.at)); }).join(', ') + '</p>' : '') +
+      '<p class="note">💡 Робіть обмін в обидва боки: ви надсилаєте свій файл, вам — свій. Раз на кілька днів достатньо.</p></section>';
+
+    // Імпорт з банку
+    html += '<section class="panel form"><h2>🏦 Виписка з банку</h2>' +
+      '<p>Не хочете вписувати кожну покупку? Завантажте виписку з банку — застосунок сам розкладе операції по категоріях.</p>' +
+      '<button class="btn primary" data-act="bank-file">📄 Обрати файл виписки</button>' +
+      hint('У застосунку банку (monobank, Приват24 та інші) відкрийте картку → <b>«Виписка»</b>, оберіть період і формат <b>CSV</b> або <b>Excel</b>, збережіть файл на телефон. Потім натисніть кнопку вище.') +
+      hint('Файл читається тут, на телефоні, і нікуди не надсилається. Те, що вже імпортували раніше, повторно не запишеться.') + '</section>';
+
     // Резервні копії
     html += '<section class="panel form"><h2>💾 Резервна копія та Excel</h2>' +
       '<button class="btn primary" data-act="export-xlsx">📗 Зберегти в Excel</button>' +
@@ -850,7 +1052,7 @@
       hint('Оберіть раніше збережений файл .json. <b>Увага:</b> поточні дані будуть замінені даними з файлу.') +
       '</section>';
 
-    html += '<section class="panel"><h2>🛡 Приватність</h2><p>Усі дані зберігаються <b>тільки на цьому телефоні</b>. Застосунок нічого не надсилає в інтернет, не має реклами й аналітики. ' +
+    html += '<section class="panel"><h2>🛡 Приватність</h2><p>Усі дані зберігаються <b>тільки на цьому телефоні</b>. Застосунок не надсилає ваші записи в інтернет, не має реклами й аналітики. В інтернет він звертається тільки коли ви самі натиснете «Взяти курс НБУ». ' +
       'Якщо видалити застосунок або очистити дані браузера — записи зникнуть, тому робіть резервні копії.</p>' +
       '<p><a href="guide.html" class="btn">📖 Інструкція</a></p>' +
       '<button class="btn danger" data-act="wipe">Видалити всі дані</button></section>';
@@ -878,6 +1080,532 @@
       '<form class="form inline-add" data-form="sub" data-parent="' + t.id + '" autocomplete="off"><input name="name" type="text" maxlength="40" required placeholder="Нова підкатегорія"><button class="btn" type="submit">+</button></form>' +
       '<button class="btn danger small-btn" data-act="cat-del" data-id="' + t.id + '">Видалити категорію</button>' +
       '</div></details>';
+  }
+
+  // ----- Імпорт виписки з банку -----
+  // Файл читається тут, на телефоні. Категорії підбираються за кодом MCC, назвою магазину
+  // і тим, як ви розклали такі самі операції минулого разу (data.rules).
+  var MCC = [
+    [[5411, 5422, 5441, 5451, 5462, 5499, 5300], ['Продукти', 'Їжа']],
+    [[5812, 5813, 5814], ['Кафе і ресторани', 'Їжа']],
+    [[5541, 5542, 5983, 5172], ['Пальне', 'Транспорт']],
+    [[4121], ['Таксі', 'Транспорт']],
+    [[4111, 4112, 4131, 4789], ['Громадський транспорт', 'Транспорт']],
+    [[7538, 7542, 5533, 5531, 7531, 7534, 7535], ['Ремонт авто', 'Транспорт']],
+    [[5912, 5122], ['Ліки', 'Здоров\'я']],
+    [[8011, 8021, 8031, 8041, 8042, 8043, 8049, 8050, 8062, 8071, 8099], ['Лікарі й аналізи', 'Здоров\'я']],
+    [[4814, 4812, 4816], ['Інтернет і мобільний', 'Комунальні послуги']],
+    [[4900], ['Комунальні послуги']],
+    [[5611, 5621, 5631, 5641, 5651, 5655, 5661, 5691, 5699, 5137, 5139], ['Одяг і взуття']],
+    [[7230, 7298], ['Перукарня', 'Краса й догляд']],
+    [[5977], ['Косметика', 'Краса й догляд']],
+    [[5200, 5211, 5231, 5251, 5261, 5712, 5713, 5714, 5718, 5719, 5722, 5732, 5734, 5311, 5331, 5310, 5399], ['Дім і побут']],
+    [[5815, 5816, 5817, 5818, 4899], ['Підписки (кіно, музика)', 'Розваги та відпочинок']],
+    [[7832, 7841, 7922, 7929, 7991, 7996, 7997, 7998, 7999, 7932, 7933], ['Прогулянки, кіно', 'Розваги та відпочинок']],
+    [[5942, 5943, 5111], ['Книжки і канцтовари', 'Навчання доньки']],
+    [[8211, 8220, 8241, 8244, 8249, 8299, 8351], ['Оплата навчання', 'Навчання доньки']],
+    [[5992, 5947, 5193], ['Подарунки']],
+    [[5945, 5641], ['Для доньки', 'Одяг і взуття']]
+  ];
+  var KEYWORDS = [
+    [/атб|atb|сільпо|silpo|novus|новус|ашан|auchan|metro|метро кеш|varus|варус|фора|fora|наш край|еко ?маркет|велмарт|maudau|лоток|spar|таврія|копійка|рукавичка|близенько/i, ['Продукти', 'Їжа']],
+    [/glovo|глово|bolt food|raketa|ракета|uklon delivery/i, ['Доставка їжі', 'Їжа']],
+    [/mcdonald|макдональдз|kfc|пузата|lviv croissants|aroma|coffee|кава|кав'ярн|кафе|cafe|ресторан|піца|pizza|sushi|суші/i, ['Кафе і ресторани', 'Їжа']],
+    [/wog|okko|окко|socar|upg|klo|брсм|brsm|shell|авіас|amic|татнафта/i, ['Пальне', 'Транспорт']],
+    [/uklon|уклон|bolt|uber/i, ['Таксі', 'Транспорт']],
+    [/аптек|apteka|подорожник|podorozhnyk|анц|ancpharm|бажаємо здоров|d\.s\.|доброго дня|tabletki/i, ['Ліки', 'Здоров\'я']],
+    [/kyivstar|київстар|vodafone|lifecell|лайфсел|воля|volia|тріолан|triolan|укртелеком|datagroup|ланет|lanet/i, ['Інтернет і мобільний', 'Комунальні послуги']],
+    [/обленерго|енерго|yasno|ясно|газопостач|газмереж|газу|naftogaz|нафтогаз|водоканал|теплоенерго|осбб|квартплат/i, ['Комунальні послуги']],
+    [/netflix|spotify|youtube|megogo|мегого|sweet\.tv|kyivstar tv|apple\.com|google|icloud|deezer|divan\.tv|oll\.tv/i, ['Підписки (кіно, музика)', 'Розваги та відпочинок']],
+    [/rozetka|розетка|epicentr|епіцентр|comfy|фокстрот|foxtrot|eldorado|(^|\s)eva(\s|$)|єва|prostor|watsons|jysk|ikea/i, ['Дім і побут']],
+    [/multiplex|планета кіно|planeta kino|кіно/i, ['Прогулянки, кіно', 'Розваги та відпочинок']]
+  ];
+  var TRANSFER_RE = /переказ|переказу|з картки|на картку|зі своєї|поповнення|банка|банку |скарбничк|p2p|transfer|card2card|зняття готівки|банкомат|atm/i;
+  var SALARY_RE = /зарплат|заробітн|salary|зп |аванс/i;
+
+  function findCat(names, type) {
+    for (var i = 0; i < names.length; i++) {
+      var n = names[i].toLowerCase();
+      var c = data.categories.filter(function (x) { return x.type === type && x.name.toLowerCase() === n; })[0];
+      if (c) return c.id;
+    }
+    return '';
+  }
+  function fallbackCat(type) {
+    return findCat(type === 'income' ? ['Інші доходи', 'Інше'] : ['Інше'], type) || ((tops(type)[tops(type).length - 1] || {}).id || '');
+  }
+  function impNorm(desc) {
+    return String(desc || '').toLowerCase().replace(/[0-9*#№_]+/g, ' ').replace(/[^a-zа-яіїєґ' ]+/gi, ' ').replace(/\s+/g, ' ').trim().split(' ').slice(0, 3).join(' ');
+  }
+  function guessCat(desc, mcc, type) {
+    var key = impNorm(desc), r = data.rules[type + ':' + key];
+    if (r && catById(r)) return r;
+    if (type === 'income') return SALARY_RE.test(desc) ? findCat(['Зарплата'], 'income') || fallbackCat('income') : fallbackCat('income');
+    var m = +mcc;
+    if (m) for (var i = 0; i < MCC.length; i++) if (MCC[i][0].indexOf(m) >= 0) { var id = findCat(MCC[i][1], 'expense'); if (id) return id; }
+    for (var k = 0; k < KEYWORDS.length; k++) if (KEYWORDS[k][0].test(desc)) { var id2 = findCat(KEYWORDS[k][1], 'expense'); if (id2) return id2; }
+    return fallbackCat('expense');
+  }
+
+  function impDate(v) {
+    v = String(v || '').trim();
+    var m = /^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2,4})/.exec(v);
+    if (m) { var y = m[3].length === 2 ? '20' + m[3] : m[3]; return y + '-' + pad(+m[2]) + '-' + pad(+m[1]); }
+    m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(v);
+    if (m) return m[1] + '-' + pad(+m[2]) + '-' + pad(+m[3]);
+    return '';
+  }
+  function impAmount(v) {
+    var s = String(v == null ? '' : v).replace(/[\s  ]/g, '').replace(/[^\d,.\-−+]/g, '').replace('−', '-');
+    if (/,\d{1,2}$/.test(s)) s = s.replace(/\./g, '').replace(',', '.'); else s = s.replace(/,/g, '');
+    var n = parseFloat(s);
+    return isNaN(n) ? NaN : n;
+  }
+
+  // Знаходимо рядок із заголовками і потрібні колонки
+  function impDetect(rows) {
+    for (var h = 0; h < Math.min(rows.length, 25); h++) {
+      var r = rows[h].map(function (x) { return String(x).toLowerCase(); });
+      var date = -1, desc = -1, amount = -1, mcc = -1;
+      r.forEach(function (x, i) {
+        if (date < 0 && /дата|date/.test(x)) date = i;
+        if (desc < 0 && /деталі|опис|призначення|description|details|контрагент|отримувач/.test(x)) desc = i;
+        if (/mcc/.test(x)) mcc = i;
+        if (/сума|amount|sum/.test(x) && !/коміс|кешбек|cashback|залишок|комис/.test(x)) {
+          if (amount < 0 || (/картк|card/.test(x) && !/картк|card/.test(r[amount]))) amount = i;
+        }
+      });
+      if (date >= 0 && amount >= 0) {
+        if (desc < 0) desc = r.findIndex(function (x, i) { return i !== date && i !== amount && i !== mcc && x; });
+        return { header: h, date: date, desc: desc, amount: amount, mcc: mcc };
+      }
+    }
+    return { header: -1, date: 0, desc: 1, amount: 2, mcc: -1 };
+  }
+
+  function impBuild(raw, map, fileName) {
+    var exist = {}, manual = {};
+    data.transactions.forEach(function (t) {
+      if (t.importKey) exist[t.importKey] = 1;
+      else manual[t.date + '|' + t.type + '|' + t.amount] = 1;
+    });
+    var rows = [], seen = {};
+    raw.slice(map.header + 1).forEach(function (r) {
+      var date = impDate(r[map.date]), amt = impAmount(r[map.amount]);
+      if (!date || isNaN(amt) || amt === 0) return;
+      var desc = map.desc >= 0 ? String(r[map.desc] || '') : '', mcc = map.mcc >= 0 ? r[map.mcc] : '';
+      var type = amt < 0 ? 'expense' : 'income', amount = round2(Math.abs(amt));
+      var key = date + '|' + type + '|' + amount + '|' + impNorm(desc);
+      var k2 = key; while (seen[k2]) k2 += '+'; seen[k2] = 1; // дві однакові кави за день — це дві різні операції
+      var flag = exist[k2] ? 'dup' : manual[date + '|' + type + '|' + amount] ? 'maybe' : (TRANSFER_RE.test(desc) || /^(4829|6011|6012|6538|6540)$/.test(String(mcc))) ? 'transfer' : '';
+      rows.push({ date: date, desc: desc, mcc: mcc, type: type, amount: amount, key: k2, flag: flag, on: !flag, categoryId: guessCat(desc, mcc, type) });
+    });
+    rows.sort(function (a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : 0; });
+    ui.imp = { raw: raw, map: map, rows: rows, file: fileName };
+  }
+
+  function startImport(file) {
+    if (!window.BankImport) { toast('Не вдалося завантажити модуль імпорту. Оновіть сторінку.', true); return; }
+    toast('Читаю файл…');
+    BankImport.read(file).then(function (raw) {
+      if (!raw.length) throw new Error('empty');
+      var map = impDetect(raw);
+      impBuild(raw, map, file.name);
+      if (!ui.imp.rows.length) { toast('У файлі не знайшлося операцій. Перевірте колонки нижче.', true); }
+      ui.tab = 'import'; render(); window.scrollTo(0, 0);
+    }).catch(function (e) {
+      var m = e && e.message;
+      toast(m === 'pdf' ? 'Це PDF. Збережіть виписку у форматі Excel або CSV' : m === 'old-xls' ? 'Старий формат .xls не підтримується. Оберіть у банку CSV або xlsx'
+        : m === 'no-inflate' ? 'Цей браузер не відкриває Excel. Оберіть у банку формат CSV' : 'Не вдалося прочитати файл. Спробуйте формат CSV', true);
+    });
+  }
+
+  function viewImport() {
+    var im = ui.imp;
+    if (!im) { ui.tab = 'settings'; return viewSettings(); }
+    var rows = im.rows, on = rows.filter(function (r) { return r.on; });
+    var sumOut = on.reduce(function (q, r) { return r.type === 'expense' ? q + r.amount : q; }, 0), sumIn = on.reduce(function (q, r) { return r.type === 'income' ? q + r.amount : q; }, 0);
+    var nDup = rows.filter(function (r) { return r.flag === 'dup'; }).length, nMaybe = rows.filter(function (r) { return r.flag === 'maybe'; }).length, nTr = rows.filter(function (r) { return r.flag === 'transfer'; }).length;
+    var html = '<section class="panel"><h2>🏦 Виписка: ' + esc(im.file) + '</h2>';
+    if (rows.length) html += '<p>Знайдено операцій: <b>' + rows.length + '</b>' + (rows.length ? ' (з ' + fmtDate(rows[rows.length - 1].date) + ' по ' + fmtDate(rows[0].date) + ')' : '') + '.</p>';
+    if (nDup) html += '<p class="note">⏭ ' + nDup + ' вже імпортовано раніше — їх вимкнено.</p>';
+    if (nMaybe) html += '<p class="note">✋ ' + nMaybe + ' схожі на записи, які ви вже внесли вручну (та сама дата й сума) — їх вимкнено, щоб не було двічі.</p>';
+    if (nTr) html += '<p class="note">🔁 ' + nTr + ' схожі на перекази між картками чи зняття готівки — їх вимкнено, бо це не витрати.</p>';
+    html += hint('Перевірте категорії. Вимкніть галочку там, що не треба записувати. Застосунок <b>запам\'ятає</b> ваш вибір і наступного разу розкладе такі операції сам.');
+    var cols = (im.raw[im.map.header] || im.raw[0] || []).map(function (h, i) { return '<option value="' + i + '">' + esc(h || ('Колонка ' + (i + 1))) + '</option>'; }).join('');
+    function colSel(k, label) {
+      return '<label>' + label + '<select data-imp-map="' + k + '"><option value="-1">—</option>' + cols.replace('value="' + im.map[k] + '"', 'value="' + im.map[k] + '" selected') + '</select></label>';
+    }
+    if (accOn()) html += '<label class="imp-acc">На який рахунок записати<select id="impAcc">' + accOptions(im.acc || defAcc()) + '</select></label>';
+    html += '<details class="imp-map"><summary>Колонки файлу (якщо щось розпізнано неправильно)</summary><div class="form">' +
+      colSel('date', 'Дата') + colSel('desc', 'Опис операції') + colSel('amount', 'Сума (мінус — витрата)') + colSel('mcc', 'Код MCC (якщо є)') + '</div></details></section>';
+
+    if (rows.length) {
+      var optE = categoryOptions('expense', ''), optI = categoryOptions('income', '');
+      html += '<section class="panel"><div class="imp-bar"><button class="btn small" data-act="imp-all" data-on="1">Усі</button><button class="btn small" data-act="imp-all" data-on="0">Жодної</button><button class="btn small imp-cancel" data-act="imp-cancel">Скасувати</button></div>' +
+        '<ul class="tx-list imp-list">' + rows.map(function (r, i) {
+          var opts = (r.type === 'income' ? optI : optE).replace('value="' + r.categoryId + '"', 'value="' + r.categoryId + '" selected');
+          return '<li class="imp-row' + (r.on ? '' : ' off') + '"><label class="imp-check"><input type="checkbox" data-imp-on="' + i + '"' + (r.on ? ' checked' : '') + ' aria-label="Записати"></label>' +
+            '<div class="tx-main"><div class="imp-top"><span class="tx-cat">' + esc(r.desc || '—') + '</span><span class="tx-sum ' + (r.type === 'income' ? 'pos' : 'neg') + '">' + (r.type === 'income' ? '+' : '−') + money(r.amount) + '</span></div>' +
+            '<div class="tx-sub">' + fmtDate(r.date) + (r.flag === 'dup' ? ' · вже є' : r.flag === 'maybe' ? ' · можливо, вже внесено' : r.flag === 'transfer' ? ' · схоже на переказ' : '') + '</div>' +
+            '<select data-imp-cat="' + i + '" aria-label="Категорія">' + opts + '</select></div></li>';
+        }).join('') + '</ul></section>';
+    }
+    html += '<div class="imp-foot"><button class="btn primary big" data-act="imp-do"' + (on.length ? '' : ' disabled') + '>Записати ' + on.length + ' операцій</button>' +
+      (on.length ? '<p class="hint">Витрати: <b class="neg">' + money0(sumOut) + '</b> · Доходи: <b class="pos">' + money0(sumIn) + '</b></p>' : '') + '</div>';
+    return html;
+  }
+
+  function doImport() {
+    var im = ui.imp; if (!im) return;
+    var n = 0, now = Date.now();
+    im.rows.forEach(function (r) {
+      data.rules[r.type + ':' + impNorm(r.desc)] = r.categoryId; // запам'ятовуємо вибір і для вимкнених рядків
+      if (!r.on || !catById(r.categoryId)) return;
+      var nt = { id: uid(), created: now + n, type: r.type, amount: r.amount, categoryId: r.categoryId, date: r.date, note: r.desc.slice(0, 120), importKey: r.key };
+      if (accOn()) nt.accountId = im.acc && accById(im.acc) ? im.acc : defAcc();
+      data.transactions.push(nt);
+      n++;
+    });
+    if (!save()) return;
+    var last = im.rows.filter(function (r) { return r.on; })[0];
+    ui.imp = null; if (last) ui.month = last.date.slice(0, 7);
+    toast('Записано операцій: ' + n + ' ✓'); go('home');
+  }
+
+  // ----- Фото чеків (IndexedDB на телефоні; у резервну копію не входять, бо важкі) -----
+  var idbP = null;
+  function idb() {
+    if (!idbP) idbP = new Promise(function (res, rej) {
+      if (!window.indexedDB) { rej(); return; }
+      var r = indexedDB.open('family-budget-photos', 1);
+      r.onupgradeneeded = function () { r.result.createObjectStore('receipts'); };
+      r.onsuccess = function () { res(r.result); };
+      r.onerror = function () { rej(r.error); };
+    });
+    return idbP;
+  }
+  function idbDo(mode, fn) {
+    return idb().then(function (db) {
+      return new Promise(function (res, rej) {
+        var tx = db.transaction('receipts', mode), st = tx.objectStore('receipts'), out = fn(st);
+        tx.oncomplete = function () { res(out && out.result); };
+        tx.onerror = function () { rej(tx.error); };
+      });
+    });
+  }
+  function photoPut(id, blob) { return idbDo('readwrite', function (st) { st.put(blob, id); }).catch(function () { toast('Не вдалося зберегти фото', true); }); }
+  function photoGet(id) { return idbDo('readonly', function (st) { return st.get(id); }).catch(function () { return null; }); }
+  function photoDel(id) { return idbDo('readwrite', function (st) { st.delete(id); }).catch(function () { }); }
+  function shrinkPhoto(file) { // зменшуємо до ~1200 px, щоб не забивати пам'ять телефону
+    return new Promise(function (res, rej) {
+      var url = URL.createObjectURL(file), img = new Image();
+      img.onload = function () {
+        var k = Math.min(1, 1200 / Math.max(img.width, img.height)), c = document.createElement('canvas');
+        c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        URL.revokeObjectURL(url);
+        c.toBlob(function (b) { b ? res(b) : rej(); }, 'image/jpeg', 0.75);
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); rej(); };
+      img.src = url;
+    });
+  }
+  function showPhoto(el) {
+    var v = $('#photoView'); if (!v || !el.src) return;
+    v.innerHTML = '<img alt="Фото чека" src="' + el.src + '"><button class="btn" data-act="photo-close">Закрити</button>';
+    v.hidden = false;
+  }
+
+  // ----- Підсумок місяця картинкою (щоб переслати у Viber/Telegram) -----
+  function monthCard() {
+    var s = summary(ui.month), W = 1080, H = 1350, c = document.createElement('canvas'), g = c.getContext('2d');
+    c.width = W; c.height = H;
+    var cs = getComputedStyle(document.documentElement), col = function (n) { return cs.getPropertyValue(n).trim() || '#2f6f4f'; };
+    var dark = document.documentElement.getAttribute('data-theme') === 'dark' || (data.settings.theme !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+    var bg = dark ? '#121614' : '#f4f6f3', panel = dark ? '#1b211e' : '#ffffff', text = dark ? '#e8ece9' : '#1d2420', muted = dark ? '#9aa59f' : '#66716b';
+    var font = '-apple-system, "Segoe UI", Roboto, Arial, sans-serif';
+    g.fillStyle = bg; g.fillRect(0, 0, W, H);
+    g.fillStyle = '#2f6f4f'; g.fillRect(0, 0, W, 220);
+    g.fillStyle = '#fff'; g.font = '700 64px ' + font; g.fillText(monthLabel(ui.month), 70, 120);
+    g.font = '400 36px ' + font; g.globalAlpha = .85; g.fillText('Підсумок місяця', 70, 175); g.globalAlpha = 1;
+    function rr(x, y, w, h, r) { g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r); g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath(); }
+    var cards = [['Доходи', s.income, col('--in')], ['Витрати', s.expense, col('--out')], ['Відкладено', s.saved, col('--sav')], ['Залишок', s.left, s.left < 0 ? col('--crit') : '#2f6f4f']];
+    cards.forEach(function (k, i) {
+      var x = 70 + (i % 2) * 480, y = 270 + Math.floor(i / 2) * 200;
+      g.fillStyle = panel; rr(x, y, 460, 175, 28); g.fill();
+      g.fillStyle = k[2]; rr(x, y, 14, 175, 7); g.fill();
+      g.fillStyle = muted; g.font = '400 34px ' + font; g.fillText(k[0], x + 44, y + 62);
+      g.fillStyle = text; g.font = '700 58px ' + font; g.fillText(money0(k[1]), x + 44, y + 135);
+    });
+    var rows = Object.keys(s.byTop).map(function (id) { return { id: id, sum: s.byTop[id] }; }).sort(function (a, b) { return b.sum - a.sum; }).slice(0, 5);
+    var y0 = 720;
+    g.fillStyle = panel; rr(70, y0, 940, 520, 28); g.fill();
+    g.fillStyle = text; g.font = '700 40px ' + font; g.fillText(rows.length ? 'Куди пішли гроші' : 'Витрат цього місяця немає', 110, y0 + 75);
+    var max = rows.length ? rows[0].sum : 1;
+    rows.forEach(function (r, i) {
+      var cat = catById(r.id), y = y0 + 130 + i * 78, pc = s.expense ? Math.round(r.sum / s.expense * 100) : 0;
+      g.fillStyle = text; g.font = '400 32px ' + font;
+      var name = cat ? cat.name : 'Без категорії'; if (name.length > 24) name = name.slice(0, 23) + '…';
+      g.fillText(name, 110, y);
+      var val = money0(r.sum) + '  ' + pc + '%'; g.font = '700 32px ' + font; g.fillText(val, 970 - g.measureText(val).width, y);
+      g.fillStyle = dark ? '#2b332f' : '#e2e7e3'; rr(110, y + 16, 860, 16, 8); g.fill();
+      g.fillStyle = cat ? col(cat.priority === 'critical' ? '--crit' : cat.priority === 'save' ? '--save' : '--imp') : muted; rr(110, y + 16, Math.max(16, 860 * r.sum / max), 16, 8); g.fill();
+    });
+    g.fillStyle = muted; g.font = '400 30px ' + font; g.fillText('Сімейний бюджет', 70, H - 50);
+    c.toBlob(function (b) {
+      var name = 'pidsumok_' + ui.month + '.png';
+      if (navigator.canShare && typeof File === 'function') {
+        try {
+          var f = new File([b], name, { type: 'image/png' });
+          if (navigator.canShare({ files: [f] })) { navigator.share({ files: [f], title: 'Підсумок: ' + monthLabel(ui.month) }).catch(function () { }); return; }
+        } catch (e) { }
+      }
+      deliver(b, name);
+    }, 'image/png');
+  }
+
+  // ----- Рахунки (картка, готівка, заначка) -----
+  function accOn() { return data.accounts.length > 0; }
+  function accById(id) { for (var i = 0; i < data.accounts.length; i++) if (data.accounts[i].id === id) return data.accounts[i]; return null; }
+  function defAcc() { return data.accounts[0] ? data.accounts[0].id : ''; }
+  function txAcc(t) { return t.accountId && accById(t.accountId) ? t.accountId : defAcc(); }
+  function accBalance(a) {
+    var b = a.start || 0;
+    data.transactions.forEach(function (t) { if (txAcc(t) === a.id) b += t.type === 'income' ? t.amount : -t.amount; });
+    data.transfers.forEach(function (x) { if (x.from === a.id) b -= x.amount; if (x.to === a.id) b += x.amount; });
+    return round2(b);
+  }
+  function accOptions(sel) {
+    return data.accounts.map(function (a) { return '<option value="' + a.id + '"' + (a.id === sel ? ' selected' : '') + '>' + esc(a.name) + '</option>'; }).join('');
+  }
+  function accountsPanel() {
+    if (!accOn()) return '';
+    var total = 0;
+    var html = '<section class="panel accs"><h2>💼 Скільки грошей зараз</h2><ul class="acc-list">' + data.accounts.map(function (a) {
+      var b = accBalance(a); total += b;
+      return '<li><span>' + esc(a.name) + '</span><b class="' + (b < 0 ? 'neg' : '') + '">' + money0(b) + '</b></li>';
+    }).join('') + '<li class="acc-total"><span>Разом</span><b>' + money0(total) + '</b></li></ul>';
+    if (ui.transfer) {
+      var a0 = data.accounts[0].id, a1 = (data.accounts[1] || data.accounts[0]).id;
+      html += '<form id="transferForm" class="form sub-form" autocomplete="off">' +
+        '<div class="row2"><label>Звідки<select name="from">' + accOptions(a0) + '</select></label><label>Куди<select name="to">' + accOptions(a1) + '</select></label></div>' +
+        '<label>Сума, ₴<input name="amount" type="text" inputmode="decimal" required placeholder="Напр. 1000"></label>' +
+        hint('Напр. зняли готівку з картки або поклали в заначку. Це <b>не витрата</b> — гроші просто переклали.') +
+        '<div class="btn-row"><button class="btn primary" type="submit">Перекласти</button><button class="btn" type="button" data-act="transfer-cancel">Скасувати</button></div></form>';
+    } else if (data.accounts.length > 1) html += '<button class="btn small-btn" data-act="transfer-new">🔁 Переклати між рахунками</button>';
+    var tr = data.transfers.filter(function (x) { return x.date.slice(0, 7) === ui.month; }).sort(function (a, b) { return b.date < a.date ? -1 : 1; });
+    if (tr.length) html += '<details class="acc-tr"><summary>Перекази цього місяця (' + tr.length + ')</summary><ul class="tx-list">' + tr.map(function (x) {
+      var f = accById(x.from), t = accById(x.to);
+      return '<li class="tx"><div class="tx-main"><div class="tx-cat">' + esc(f ? f.name : '?') + ' → ' + esc(t ? t.name : '?') + '</div><div class="tx-sub">' + fmtDate(x.date) + '</div></div>' +
+        '<div class="tx-sum">' + money0(x.amount) + '</div><button class="icon-btn small" data-act="transfer-del" data-id="' + x.id + '" aria-label="Видалити">✕</button></li>';
+    }).join('') + '</ul></details>';
+    return html + '</section>';
+  }
+  function submitTransfer(f) {
+    var amount = calcNum(f.amount.value);
+    if (isNaN(amount) || amount <= 0) { toast('Вкажіть суму цифрами', true); return; }
+    if (f.from.value === f.to.value) { toast('Оберіть два різні рахунки', true); return; }
+    data.transfers.push({ id: uid(), created: Date.now(), date: today(), from: f.from.value, to: f.to.value, amount: round2(amount) });
+    save(); ui.transfer = false; toast('Перекладено ✓'); render();
+  }
+  function accountsSettings() {
+    var html = '<section class="panel form" id="accounts"><h2>💼 Рахунки</h2>';
+    if (!accOn()) {
+      return html + '<p>Хочете бачити, скільки грошей на картці, а скільки готівкою? Увімкніть рахунки.</p>' +
+        '<button class="btn primary" data-act="acc-on">Вести облік по рахунках</button>' +
+        hint('З\'являться «💳 Картка» і «💵 Готівка». Можна перейменувати й додати свої (напр. «🐷 Заначка»).') + '</section>';
+    }
+    html += hint('Вкажіть, скільки грошей було на кожному рахунку <b>на початку</b> — далі застосунок рахує сам. Перший рахунок — основний: туди йдуть записи, де рахунок не обрано.');
+    html += data.accounts.map(function (a) {
+      return '<div class="acc-row"><input type="text" maxlength="24" data-acc-field="name" data-id="' + a.id + '" value="' + esc(a.name) + '" aria-label="Назва рахунку">' +
+        '<input type="text" inputmode="decimal" data-acc-field="start" data-id="' + a.id + '" value="' + (a.start || '') + '" placeholder="Було, ₴" aria-label="Початковий залишок">' +
+        '<button class="icon-btn small" data-act="acc-del" data-id="' + a.id + '" aria-label="Видалити">✕</button></div>';
+    }).join('') +
+      '<form id="newAccForm" class="form inline-add" autocomplete="off"><input name="name" type="text" maxlength="24" required placeholder="Новий рахунок, напр. 🐷 Заначка"><button class="btn primary" type="submit">Додати</button></form></section>';
+    return html;
+  }
+
+  // ----- Курс НБУ -----
+  // Єдиний запит в інтернет у застосунку: лише по курс євро. Ваші записи нікуди не йдуть.
+  function fetchRate() {
+    var done = function (r) { data.settings.eurRate = round2(r); save(); toast('Курс НБУ: 1 € = ' + nf.format(round2(r)) + ' ₴ ✓'); render(); };
+    toast('Дізнаюсь курс…');
+    fetch('https://bank.gov.ua/NBUStatService/v1/statdirectory/exchange?valcode=EUR&json', { credentials: 'omit', referrerPolicy: 'no-referrer' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) { if (j && j[0] && j[0].rate > 0) done(j[0].rate); else throw 0; })
+      .catch(function () {
+        fetch('https://api.monobank.ua/bank/currency', { credentials: 'omit', referrerPolicy: 'no-referrer' }).then(function (r) { return r.json(); }).then(function (j) {
+          var e = (j || []).filter(function (x) { return x.currencyCodeA === 978 && x.currencyCodeB === 980; })[0];
+          if (e && (e.rateSell || e.rateCross)) done(e.rateSell || e.rateCross); else throw 0;
+        }).catch(function () { toast('Не вдалося дізнатися курс. Перевірте інтернет або впишіть вручну', true); });
+      });
+  }
+
+  // ----- Спільний бюджет: обмін записами між телефонами -----
+  // Кожен телефон веде свої записи. Раз на кілька днів надсилаєте файл одне одному (Viber, Telegram),
+  // і застосунок зливає записи без дублів. Інтернет-сервер не потрібен, дані йдуть тільки тим, кому ви надіслали.
+  function markDeleted(id) { if (id) data.deleted[id] = Date.now(); }
+
+  function exportSync() {
+    if (!data.settings.person) { toast('Спершу впишіть своє ім\'я в «👫 Спільний бюджет»', true); return; }
+    var pkg = { kind: 'family-budget-sync', v: 1, from: data.settings.person, deviceId: data.settings.deviceId, sent: Date.now(), data: data };
+    var name = 'budget-sync_' + data.settings.person.replace(/[^\wа-яіїєґ-]+/gi, '') + '_' + stamp() + '.json';
+    var blob = new Blob([JSON.stringify(pkg)], { type: 'application/json' });
+    if (canShareFiles()) {
+      var file = new File([blob], name, { type: 'application/json' });
+      navigator.share({ files: [file], title: 'Записи бюджету від ' + data.settings.person })
+        .then(function () { toast('Надіслано ✓ Нехай інший телефон натисне «Прийняти записи»'); })
+        .catch(function (e) { if (e && e.name !== 'AbortError') deliver(blob, name); });
+    } else deliver(blob, name);
+  }
+
+  function mergeSync(pkg) {
+    var inc = normalize(pkg.data), res = { tx: 0, upd: 0, del: 0, contrib: 0, goals: 0, cats: 0, plan: 0 };
+    var catMap = {}, goalMap = {};
+    function key(c, list) { var par = c.parentId ? list.filter(function (x) { return x.id === c.parentId; })[0] : null; return c.type + '|' + (par ? par.name.toLowerCase() + '›' : '') + c.name.toLowerCase(); }
+    var localByKey = {};
+    data.categories.forEach(function (c) { localByKey[key(c, data.categories)] = c; });
+    // спершу головні категорії, потім підкатегорії — щоб знати нового «батька»
+    inc.categories.slice().sort(function (a, b) { return (a.parentId ? 1 : 0) - (b.parentId ? 1 : 0); }).forEach(function (c) {
+      if (catById(c.id)) { catMap[c.id] = c.id; return; }
+      var hit = localByKey[key(c, inc.categories)];
+      if (hit) { catMap[c.id] = hit.id; return; }
+      if (data.deleted[c.id]) return;
+      var nc = Object.assign({}, c, { parentId: c.parentId ? (catMap[c.parentId] || null) : null });
+      data.categories.push(nc); catMap[c.id] = nc.id; localByKey[key(nc, data.categories)] = nc; res.cats++;
+    });
+    function mapCat(id) { return id ? (catMap[id] || (catById(id) ? id : '')) : ''; }
+
+    inc.goals.forEach(function (g) {
+      var hit = data.goals.filter(function (x) { return x.id === g.id; })[0] || data.goals.filter(function (x) { return x.name.toLowerCase() === g.name.toLowerCase() && x.currency === g.currency; })[0];
+      if (hit) { goalMap[g.id] = hit.id; if (!hit.target && g.target) hit.target = g.target; if (!hit.deadline && g.deadline) hit.deadline = g.deadline; return; }
+      if (data.deleted[g.id]) return;
+      data.goals.push(Object.assign({}, g)); goalMap[g.id] = g.id; res.goals++;
+    });
+
+    // видалене на тому телефоні — прибираємо і тут
+    Object.keys(inc.deleted).forEach(function (id) {
+      if (!data.deleted[id] || data.deleted[id] < inc.deleted[id]) data.deleted[id] = inc.deleted[id];
+    });
+    var before = data.transactions.length + data.contributions.length;
+    data.transactions = data.transactions.filter(function (t) { return !(data.deleted[t.id] && data.deleted[t.id] >= (t.updated || t.created || 0)); });
+    data.contributions = data.contributions.filter(function (c) { return !data.deleted[c.id]; });
+    res.del = before - data.transactions.length - data.contributions.length;
+
+    var byId = {}, keys = {}, added = {};
+    data.transactions.forEach(function (t) { byId[t.id] = t; if (t.importKey) keys[t.importKey] = 1; });
+    inc.transactions.forEach(function (t) {
+      if (data.deleted[t.id]) return;
+      var cat = mapCat(t.categoryId); if (!cat) return;
+      var loc = byId[t.id];
+      var copy = Object.assign({}, t, { categoryId: cat, by: t.by || pkg.from });
+      delete copy.photo; // фото чека лишається на тому телефоні
+      if (loc) {
+        if ((t.updated || 0) > (loc.updated || 0)) { Object.assign(loc, copy); res.upd++; }
+        return;
+      }
+      if (t.importKey && keys[t.importKey]) return; // ту саму виписку імпортували на обох телефонах
+      data.transactions.push(copy); byId[t.id] = copy; added[t.id] = 1; res.tx++;
+    });
+
+    var cIds = {}; data.contributions.forEach(function (c) { cIds[c.id] = 1; });
+    inc.contributions.forEach(function (c) {
+      if (cIds[c.id] || data.deleted[c.id] || !goalMap[c.goalId]) return;
+      if (c.initial && data.contributions.some(function (x) { return x.initial && x.goalId === goalMap[c.goalId]; })) return;
+      data.contributions.push(Object.assign({}, c, { goalId: goalMap[c.goalId] })); res.contrib++;
+    });
+
+    inc.recurring.forEach(function (r) {
+      if (data.deleted[r.id] || data.recurring.some(function (x) { return x.id === r.id || x.name.toLowerCase() === r.name.toLowerCase(); })) return;
+      data.recurring.push(Object.assign({}, r, { categoryId: mapCat(r.categoryId) })); res.plan++;
+    });
+    Object.keys(inc.plans).forEach(function (m) {
+      var ip = inc.plans[m], lp = getPlan(m, true);
+      if (!lp.income && ip.income) lp.income = ip.income;
+      ip.items.forEach(function (it) {
+        if (data.deleted[it.id] || lp.items.some(function (x) { return x.id === it.id; })) return;
+        lp.items.push(Object.assign({}, it, { categoryId: mapCat(it.categoryId) })); res.plan++;
+      });
+      // «оплачено»: перемагає новіша позначка
+      var ia = ip.paidAt || {}; lp.paidAt = lp.paidAt || {};
+      Object.keys(ip.paid).forEach(function (id) {
+        // обидва позначили «оплачено» — лишаємо одну витрату, а не дві
+        var itx = ip.paid[id];
+        if (lp.paid[id] !== undefined && itx && added[itx] && itx !== lp.paid[id]) {
+          data.transactions = data.transactions.filter(function (t) { return t.id !== itx; });
+          delete byId[itx]; delete added[itx]; res.tx--;
+        }
+      });
+      Object.keys(ip.paid).concat(Object.keys(ia)).forEach(function (id) {
+        var it = Math.abs(ia[id] || 1), lt = Math.abs(lp.paidAt[id] || 0);
+        if (it <= lt) return;
+        if (ip.paid[id] !== undefined && (ia[id] || 1) > 0) lp.paid[id] = byId[ip.paid[id]] ? ip.paid[id] : '';
+        else delete lp.paid[id];
+        lp.paidAt[id] = ia[id] || 1;
+      });
+    });
+    var accMap = {};
+    inc.accounts.forEach(function (a) {
+      var hit = accById(a.id) || data.accounts.filter(function (x) { return x.name.toLowerCase() === a.name.toLowerCase(); })[0];
+      if (hit) { accMap[a.id] = hit.id; return; }
+      if (data.deleted[a.id]) return;
+      data.accounts.push(Object.assign({}, a)); accMap[a.id] = a.id;
+    });
+    data.transactions.forEach(function (t) { if (added[t.id] && t.accountId) t.accountId = accMap[t.accountId] || ''; });
+    data.transfers = data.transfers.filter(function (x) { return !data.deleted[x.id]; });
+    var trIds = {}; data.transfers.forEach(function (x) { trIds[x.id] = 1; });
+    inc.transfers.forEach(function (x) {
+      if (trIds[x.id] || data.deleted[x.id] || !accMap[x.from] || !accMap[x.to]) return;
+      data.transfers.push(Object.assign({}, x, { from: accMap[x.from], to: accMap[x.to] }));
+    });
+    Object.keys(inc.rules).forEach(function (k) { if (!data.rules[k]) { var c = mapCat(inc.rules[k]); if (c) data.rules[k] = c; } });
+    data.settings.partners[pkg.deviceId] = { name: pkg.from, at: Date.now() };
+    return res;
+  }
+
+  function importSync(file) {
+    var r = new FileReader();
+    r.onload = function () {
+      var pkg;
+      try { pkg = JSON.parse(r.result); } catch (e) { toast('Це не файл із записами бюджету', true); return; }
+      if (!pkg || pkg.kind !== 'family-budget-sync' || !isValidData(pkg.data)) {
+        if (isValidData(pkg)) toast('Це резервна копія, а не файл обміну. Її відновлюють кнопкою «Відновити з резервної копії»', true);
+        else toast('Файл не від цього застосунку', true);
+        return;
+      }
+      if (pkg.deviceId === data.settings.deviceId) { toast('Це ваш власний файл. Прийняти треба файл з іншого телефону', true); return; }
+      var res = mergeSync(pkg);
+      save();
+      var parts = [];
+      if (res.tx) parts.push('нових записів: ' + res.tx);
+      if (res.upd) parts.push('змінено: ' + res.upd);
+      if (res.del) parts.push('видалено: ' + res.del);
+      if (res.contrib) parts.push('поповнень цілей: ' + res.contrib);
+      if (res.plan) parts.push('пунктів плану: ' + res.plan);
+      toast(parts.length ? 'Від ' + pkg.from + ' — ' + parts.join(', ') + ' ✓' : 'Усе вже збігається, нового нічого ✓');
+      go('home');
+    };
+    r.onerror = function () { toast('Не вдалося прочитати файл', true); };
+    r.readAsText(file);
+  }
+
+  // Хто скільки витратив (коли записи від двох і більше людей)
+  function whoPanel(month) {
+    var by = {}, n = 0;
+    data.transactions.forEach(function (t) {
+      if (t.type !== 'expense' || t.date.slice(0, 7) !== month) return;
+      var w = t.by || 'Не вказано';
+      if (!by[w]) { by[w] = 0; n++; }
+      by[w] += t.amount;
+    });
+    if (n < 2) return '';
+    var total = Object.keys(by).reduce(function (q, k) { return q + by[k]; }, 0) || 1;
+    var rows = Object.keys(by).sort(function (a, b) { return by[b] - by[a]; });
+    return '<section class="panel"><h2>👫 Хто скільки витратив</h2><div class="bars">' + rows.map(function (w) {
+      return '<div class="bar-row"><div class="bar-head"><span>' + esc(w) + '</span><span>' + money0(by[w]) + ' <small>(' + Math.round(by[w] / total * 100) + '%)</small></span></div>' +
+        '<div class="bar"><div class="fill cmp-now" data-w="' + (by[w] / total * 100) + '"></div></div></div>';
+    }).join('') + '</div></section>';
   }
 
   // ----- План на місяць -----
@@ -1000,6 +1728,11 @@
           '<div class="tx-sum">' + money0(x.amount) + '</div></li>';
       }).join('') + '</ul>';
     } else if (!f) html += '<p class="muted">Поки порожньо.</p>';
+    if (kind === 'rec' && list.length) {
+      var mon = list.reduce(function (q, x) { return q + x.amount; }, 0);
+      html += '<p class="year-total">Разом <b>' + money0(mon) + '</b> на місяць — це <b>' + money0(mon * 12) + '</b> на рік.</p>' +
+        hint('Подивіться на підписки (кіно, музика, сервіси): чи всіма ви справді користуєтесь? Одна зайва підписка за 150 ₴ — це 1 800 ₴ на рік.');
+    }
     if (f && !f.id) html += planForm(kind, null);
     else if (!f) html += '<button class="btn primary small-btn" data-act="plan-new" data-kind="' + kind + '">+ Додати</button>';
     return html + '</section>';
@@ -1034,7 +1767,7 @@
 
   function submitPlanForm(f) {
     var name = f.name.value.trim(); if (!name) { toast('Вкажіть назву', true); return; }
-    var amount = parseNum(f.amount.value);
+    var amount = calcNum(f.amount.value);
     if (isNaN(amount) || amount <= 0) { toast('Вкажіть суму цифрами, більше нуля', true); f.amount.focus(); return; }
     var day = f.day.value.trim() === '' ? 0 : parseNum(f.day.value);
     if (isNaN(day) || day < 0 || day > 31 || day !== Math.floor(day)) { toast('Число оплати — від 1 до 31', true); f.day.focus(); return; }
@@ -1053,6 +1786,7 @@
     var x = findPlanEntry(id); if (!x) return;
     var isRec = data.recurring.indexOf(x) >= 0;
     if (!confirm(isRec ? 'Видалити «' + x.name + '» з обов\'язкових платежів? Він зникне з усіх місяців.' : 'Видалити «' + x.name + '» з плану?')) return;
+    markDeleted(id);
     if (isRec) data.recurring = data.recurring.filter(function (r) { return r.id !== id; });
     else { var p = getPlan(ui.planMonth); p.items = p.items.filter(function (r) { return r.id !== id; }); delete p.paid[id]; }
     save(); ui.planForm = null; toast('Видалено'); render();
@@ -1067,8 +1801,9 @@
       if (tx) {
         if (!confirm('Зняти позначку «оплачено»? Запис витрати ' + money(tx.amount) + ' від ' + fmtDate(tx.date) + ' теж буде видалено.')) return;
         data.transactions = data.transactions.filter(function (t) { return t.id !== tx.id; });
+        markDeleted(tx.id);
       }
-      delete p.paid[id];
+      delete p.paid[id]; p.paidAt = p.paidAt || {}; p.paidAt[id] = -Date.now();
       save(); toast('Позначку знято'); render(); return;
     }
     var txId = '';
@@ -1077,7 +1812,7 @@
       var t = { id: uid(), created: Date.now(), type: 'expense', amount: x.amount, categoryId: x.categoryId, date: d, note: x.name + ' (за планом)' };
       data.transactions.push(t); txId = t.id;
     }
-    p.paid[id] = txId;
+    p.paid[id] = txId; p.paidAt = p.paidAt || {}; p.paidAt[id] = Date.now();
     save(); toast(txId ? 'Оплачено ✓ Записано у витрати' : 'Оплачено ✓'); render();
   }
 
@@ -1098,10 +1833,13 @@
       '<button class="btn" data-act="go-plan" data-month="' + next + '">План на ' + monthLabel(next).toLowerCase().split(' ')[0] + '</button></div></section>';
   }
 
-  var VIEWS = { home: viewHome, add: viewAdd, history: viewHistory, plan: viewPlan, goals: viewGoals, settings: viewSettings };
+  var VIEWS = { home: viewHome, add: viewAdd, history: viewHistory, plan: viewPlan, goals: viewGoals, settings: viewSettings, import: viewImport };
 
   // ---------------- Дії ----------------
-  function go(tab) { ui.tab = tab; ui.goalForm = null; ui.newGoal = false; ui.planForm = null; if (tab !== 'add') ui.editId = null; render(); window.scrollTo(0, 0); }
+  function go(tab) {
+    ui.tab = tab; ui.goalForm = null; ui.newGoal = false; ui.planForm = null; ui.transfer = false; ui.photoBlob = null; ui.photoRemove = false; if (tab !== 'add') ui.editId = null; render(); window.scrollTo(0, 0);
+    if (tab === 'add' && !ui.editId) { var a = $('#txAmount'); if (a) a.focus({ preventScroll: true }); }
+  }
 
   document.addEventListener('click', function (e) {
     var tabBtn = e.target.closest('[data-tab]');
@@ -1134,20 +1872,81 @@
       case 'share-json': shareJson(); break;
       case 'plan-income-suggest': setPlanIncome(+el.getAttribute('data-sum') || 0); break;
       case 'go-add': go('add'); break;
+      case 'sync-out': exportSync(); break;
+      case 'rate-nbu': fetchRate(); break;
+      case 'transfer-new': ui.transfer = true; render(); break;
+      case 'transfer-cancel': ui.transfer = false; render(); break;
+      case 'transfer-del':
+        if (confirm('Видалити цей переказ?')) { data.transfers = data.transfers.filter(function (x) { return x.id !== id; }); markDeleted(id); save(); render(); }
+        break;
+      case 'acc-on':
+        data.accounts = [{ id: uid(), name: '💳 Картка', start: 0 }, { id: uid(), name: '💵 Готівка', start: 0 }];
+        save(); toast('Рахунки увімкнено. Впишіть, скільки на них було'); render();
+        break;
+      case 'acc-del':
+        var acc = accById(id); if (!acc) break;
+        var usedA = data.transactions.filter(function (t) { return t.accountId === id; }).length + data.transfers.filter(function (x) { return x.from === id || x.to === id; }).length;
+        if (data.accounts.length === 1) {
+          if (usedA) { toast('Є записи з цим рахунком. Його не можна видалити', true); break; }
+          if (!confirm('Вимкнути облік по рахунках?')) break;
+        } else if (usedA) {
+          if (!confirm('Записи з «' + acc.name + '» (' + usedA + ') перейдуть на «' + data.accounts.filter(function (a) { return a.id !== id; })[0].name + '». Видалити?')) break;
+          var to = data.accounts.filter(function (a) { return a.id !== id; })[0].id;
+          data.transactions.forEach(function (t) { if (t.accountId === id) t.accountId = to; });
+          data.transfers.forEach(function (x) { if (x.from === id) x.from = to; if (x.to === id) x.to = to; });
+          data.transfers = data.transfers.filter(function (x) { return x.from !== x.to; });
+        } else if (!confirm('Видалити рахунок «' + acc.name + '»?')) break;
+        data.accounts = data.accounts.filter(function (a) { return a.id !== id; });
+        save(); render();
+        break;
+      case 'sync-in': $('#syncFile').value = ''; $('#syncFile').click(); break;
+      case 'bank-file': $('#bankFile').value = ''; $('#bankFile').click(); break;
+      case 'imp-do': doImport(); break;
+      case 'imp-cancel': ui.imp = null; go('settings'); break;
+      case 'imp-all': if (ui.imp) { var on = el.getAttribute('data-on') === '1'; ui.imp.rows.forEach(function (r) { r.on = on; }); render(); } break;
+      case 'ob-next': if (onboardStep < ONBOARD.length - 1) { onboardStep++; showOnboarding(); } else finishOnboarding(); break;
+      case 'ob-done': finishOnboarding(); break;
+      case 'ob-again': onboardStep = 0; showOnboarding(); break;
+      case 'theme': data.settings.theme = el.getAttribute('data-theme'); save(); applyTheme(); render(); break;
+      case 'quick-save':
+        var qt = quickTemplates(ui.addType).tpl[+el.getAttribute('data-i')];
+        if (qt) quickAdd({ type: ui.addType, amount: qt.amount, categoryId: qt.categoryId, note: qt.note });
+        break;
+      case 'quick-cat':
+        var qf = $('#txForm'); if (!qf) break;
+        qf.categoryId.value = id; qf.amount.focus();
+        toast('Категорія: ' + shortCat(id) + '. Впишіть суму');
+        break;
+      case 'tx-repeat': var rt = txById(id); if (rt) quickAdd(rt); break;
+      case 'calc-op': case 'calc-eq': case 'calc-clr':
+        var ai = $('#txAmount'); if (!ai) break;
+        if (act === 'calc-clr') ai.value = ai.value.slice(0, -1);
+        else if (act === 'calc-eq') { var cv = calcNum(ai.value); if (isNaN(cv)) toast('Не можу порахувати. Перевірте приклад', true); else ai.value = String(round2(cv)).replace('.', ','); }
+        else {
+          var op = el.getAttribute('data-op');
+          ai.value = ai.value.replace(/[+\-*/×÷−\s]+$/, '') + (ai.value.trim() ? op : '');
+        }
+        calcShow(); ai.focus();
+        break;
       case 'go-settings': go('settings'); break;
       case 'type': ui.addType = el.getAttribute('data-type'); if (!ui.editId) render(); else changeEditType(el.getAttribute('data-type')); break;
-      case 'edit-tx': ui.editId = id; ui.tab = 'add'; render(); window.scrollTo(0, 0); break;
-      case 'cancel-edit': ui.editId = null; render(); break;
+      case 'edit-tx': ui.photoBlob = null; ui.photoRemove = false; ui.editId = id; ui.tab = 'add'; render(); window.scrollTo(0, 0); break;
+      case 'cancel-edit': ui.editId = null; ui.photoBlob = null; ui.photoRemove = false; render(); break;
+      case 'photo-pick': $('#photoFile').value = ''; $('#photoFile').click(); break;
+      case 'photo-del': ui.photoBlob = null; ui.photoRemove = true; $('#photoPrev').innerHTML = ''; $('#photoDel').hidden = true; break;
+      case 'photo-view': showPhoto(el); break;
+      case 'photo-close': $('#photoView').hidden = true; $('#photoView').innerHTML = ''; break;
+      case 'month-card': monthCard(); break;
       case 'del-tx':
         if (confirm('Видалити цей запис?')) {
           data.transactions = data.transactions.filter(function (t) { return t.id !== id; });
-          save(); ui.editId = null; toast('Запис видалено'); render();
+          photoDel(id); markDeleted(id); save(); ui.editId = null; toast('Запис видалено'); render();
         }
         break;
       case 'del-contrib':
         if (confirm('Видалити це поповнення цілі?')) {
           data.contributions = data.contributions.filter(function (c) { return c.id !== id; });
-          save(); toast('Видалено'); render();
+          markDeleted(id); save(); toast('Видалено'); render();
         }
         break;
       case 'new-goal': ui.newGoal = true; ui.goalForm = null; render(); break;
@@ -1157,6 +1956,8 @@
       case 'goal-cancel': ui.goalForm = null; ui.newGoal = false; render(); break;
       case 'goal-del':
         if (confirm('Видалити ціль разом з історією поповнень?')) {
+          markDeleted(id);
+          data.contributions.forEach(function (c) { if (c.goalId === id) markDeleted(c.id); });
           data.goals = data.goals.filter(function (g) { return g.id !== id; });
           data.contributions = data.contributions.filter(function (c) { return c.goalId !== id; });
           save(); ui.goalForm = null; toast('Ціль видалено'); render();
@@ -1195,11 +1996,18 @@
     if (f.id === 'contribForm') return submitContrib(f);
     if (f.id === 'goalForm') return submitGoal(f);
     if (f.id === 'planForm') return submitPlanForm(f);
+    if (f.id === 'transferForm') return submitTransfer(f);
+    if (f.id === 'newAccForm') {
+      var an = f.name.value.trim(); if (!an) return;
+      data.accounts.push({ id: uid(), name: an, start: 0 }); save(); toast('Рахунок додано ✓'); render(); return;
+    }
     if (f.id === 'newCatForm') return addCategory(f.name.value, null);
     if (f.getAttribute('data-form') === 'sub') return addCategory(f.name.value, f.getAttribute('data-parent'));
     if (f.id === 'pinForm') return setPin(f.pin.value);
     if (f.id === 'lockForm') return unlock();
   });
+
+  document.addEventListener('input', function (e) { if (e.target.id === 'txAmount') calcShow(); });
 
   document.addEventListener('change', function (e) {
     var el = e.target;
@@ -1220,6 +2028,50 @@
       data.settings.eurRate = r; save(); toast('Курс збережено'); return;
     }
     if (el.id === 'restoreFile') { if (el.files && el.files[0]) importJson(el.files[0]); return; }
+    if (el.id === 'impAcc' && ui.imp) { ui.imp.acc = el.value; return; }
+    var af = el.getAttribute('data-acc-field');
+    if (af) {
+      var ac = accById(el.getAttribute('data-id')); if (!ac) return;
+      if (af === 'name') { var nn = el.value.trim(); if (!nn) { el.value = ac.name; return; } ac.name = nn; }
+      else { var sv = el.value.trim() === '' ? 0 : calcNum(el.value); if (isNaN(sv)) { toast('Сума має бути числом', true); el.value = ac.start || ''; return; } ac.start = round2(sv); }
+      save(); toast('Збережено ✓'); return;
+    }
+    if (el.id === 'photoFile') {
+      if (!el.files || !el.files[0]) return;
+      shrinkPhoto(el.files[0]).then(function (b) {
+        ui.photoBlob = b; ui.photoRemove = false;
+        var pv = $('#photoPrev'); if (!pv) return;
+        pv.innerHTML = ''; var im = document.createElement('img'); im.alt = 'Фото чека'; im.src = URL.createObjectURL(b); im.setAttribute('data-act', 'photo-view'); pv.appendChild(im);
+        $('#photoDel').hidden = false;
+      }).catch(function () { toast('Не вдалося відкрити фото', true); });
+      return;
+    }
+    if (el.id === 'syncFile') { if (el.files && el.files[0]) importSync(el.files[0]); return; }
+    if (el.id === 'personName') {
+      var pn = el.value.trim().slice(0, 20);
+      var first = !data.settings.person;
+      data.settings.person = pn;
+      if (first && pn) data.transactions.forEach(function (t) { if (!t.by) t.by = pn; }); // старі записи зроблені на цьому телефоні
+      save(); toast(pn ? 'Ім\'я збережено ✓' : 'Ім\'я прибрано'); return;
+    }
+    if (el.id === 'bankFile') { if (el.files && el.files[0]) startImport(el.files[0]); return; }
+    if (ui.imp && el.hasAttribute('data-imp-on')) {
+      var ir = ui.imp.rows[+el.getAttribute('data-imp-on')]; if (ir) ir.on = el.checked;
+      var y = window.scrollY; render(); window.scrollTo(0, y); return;
+    }
+    if (ui.imp && el.hasAttribute('data-imp-cat')) {
+      var rr = ui.imp.rows[+el.getAttribute('data-imp-cat')]; if (!rr) return;
+      rr.categoryId = el.value;
+      // такі самі операції (той самий магазин) — у ту саму категорію
+      var nk = impNorm(rr.desc), same = 0;
+      ui.imp.rows.forEach(function (o) { if (o !== rr && o.type === rr.type && impNorm(o.desc) === nk && nk) { o.categoryId = el.value; same++; } });
+      if (same) { var y2 = window.scrollY; render(); window.scrollTo(0, y2); toast('Ще ' + same + ' таких самих операцій перенесено в цю категорію'); }
+      return;
+    }
+    if (ui.imp && el.hasAttribute('data-imp-map')) {
+      ui.imp.map[el.getAttribute('data-imp-map')] = +el.value;
+      impBuild(ui.imp.raw, ui.imp.map, ui.imp.file); render(); return;
+    }
     var field = el.getAttribute('data-cat-field');
     if (field) {
       var c = catById(el.getAttribute('data-id')); if (!c) return;
@@ -1239,19 +2091,26 @@
   });
 
   function submitTx(f) {
-    var amount = parseNum(f.amount.value);
-    if (isNaN(amount) || amount <= 0) { toast('Вкажіть суму цифрами, більше нуля', true); f.amount.focus(); return; }
+    var amount = calcNum(f.amount.value);
+    if (isNaN(amount) || amount <= 0) { toast(isExpr(f.amount.value) ? 'Не можу порахувати суму. Перевірте приклад' : 'Вкажіть суму цифрами, більше нуля', true); f.amount.focus(); return; }
     if (!f.categoryId.value) { toast('Оберіть категорію', true); return; }
     if (!f.date.value) { toast('Вкажіть дату', true); return; }
     var rec = { type: f.type.value, amount: round2(amount), categoryId: f.categoryId.value, date: f.date.value, note: f.note.value.trim() };
+    if (f.accountId) { rec.accountId = f.accountId.value; ui.lastAcc = rec.accountId; }
+    var pb = ui.photoBlob, prm = ui.photoRemove; ui.photoBlob = null; ui.photoRemove = false;
+    if (pb) rec.photo = true;
     if (ui.editId) {
       var t = data.transactions.filter(function (x) { return x.id === ui.editId; })[0];
-      if (t) Object.assign(t, rec);
+      if (t) {
+        Object.assign(t, rec); t.updated = Date.now();
+        if (pb) photoPut(t.id, pb); else if (prm && t.photo) { delete t.photo; photoDel(t.id); }
+      }
       ui.editId = null;
       if (save()) toast('Зміни збережено ✓');
     } else {
       rec.id = uid(); rec.created = Date.now();
       data.transactions.push(rec);
+      if (pb) photoPut(rec.id, pb);
       var lw = limitToast(rec);
       if (save()) toast(lw ? 'Збережено ✓ ' + lw : (rec.type === 'income' ? 'Дохід ' : 'Витрату ') + money(rec.amount) + ' збережено ✓', !!lw && lw.charAt(0) === '🔴');
     }
@@ -1415,11 +2274,11 @@
   function goalName(id) { var g = data.goals.filter(function (x) { return x.id === id; })[0]; return g ? g.name : '—'; }
 
   function exportXlsx() {
-    var txRows = [['Дата', 'Тип', 'Категорія', 'Підкатегорія', 'Важливість', 'Сума, ₴', 'Коментар']];
+    var txRows = [['Дата', 'Тип', 'Категорія', 'Підкатегорія', 'Важливість', 'Сума, ₴', 'Коментар', 'Рахунок', 'Хто']];
     data.transactions.slice().sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; }).forEach(function (t) {
       var c = catById(t.categoryId), top = topOf(c);
       txRows.push([fmtDate(t.date), t.type === 'income' ? 'Дохід' : 'Витрата', top ? top.name : '—', c && c !== top ? c.name : '',
-        c ? PRI[c.priority].label : '', t.amount, t.note || '']);
+        c ? PRI[c.priority].label : '', t.amount, t.note || '', accOn() && accById(txAcc(t)) ? accById(txAcc(t)).name : '', t.by || '']);
     });
 
     var months = {};
@@ -1466,12 +2325,14 @@
     });
 
     var blob = XlsxLite.build([
-      { name: 'Операції', rows: txRows, widths: [12, 10, 24, 24, 18, 12, 30] },
+      { name: 'Операції', rows: txRows, widths: [12, 10, 24, 24, 18, 12, 30, 14, 12] },
       { name: 'Підсумки по місяцях', rows: sumRows, widths: [16, 12, 12, 12, 12, 13, 13, 18].concat(expTops.map(function () { return 16; })) },
       { name: 'Цілі', rows: goalRows, widths: [24, 8, 12, 12, 12, 12, 12] },
       { name: 'Поповнення цілей', rows: cRows, widths: [12, 24, 10, 8, 8, 12, 16] },
       { name: 'Категорії', rows: catRows, widths: [24, 24, 10, 18, 14] }
-    ].concat(planRows.length > 1 ? [{ name: 'План', rows: planRows, widths: [16, 24, 28, 12, 10] }] : []));
+    ].concat(planRows.length > 1 ? [{ name: 'План', rows: planRows, widths: [16, 24, 28, 12, 10] }] : [])
+      .concat(accOn() ? [{ name: 'Рахунки', rows: [['Рахунок', 'Було на початку, ₴', 'Зараз, ₴']].concat(data.accounts.map(function (a) { return [a.name, a.start || 0, accBalance(a)]; }))
+        .concat(data.transfers.length ? [[], ['Перекази', '', '']].concat([['Дата', 'Звідки', 'Куди', 'Сума, ₴']]).concat(data.transfers.map(function (x) { var f = accById(x.from), t = accById(x.to); return [fmtDate(x.date), f ? f.name : '', t ? t.name : '', x.amount]; })) : []), widths: [16, 18, 18, 12] }] : []));
     deliver(blob, 'budget_' + stamp() + '.xlsx');
   }
 
@@ -1491,6 +2352,7 @@
   // ---------------- Старт ----------------
   render();
   if (data.settings.pinHash) lock();
+  else if (!data.settings.onboarded) showOnboarding();
   syncReminderSchedule();
   registerBackgroundCheck();
   checkNotifications();

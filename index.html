@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- Безпека: застосунок не має права нікуди відправляти дані -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; manifest-src 'self'; worker-src 'self'; form-action 'none'; base-uri 'none'; object-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src https://bank.gov.ua https://api.monobank.ua; manifest-src 'self'; worker-src 'self'; form-action 'none'; base-uri 'none'; object-src 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="theme-color" content="#2f6f4f">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -48,10 +48,16 @@
   <button type="button" data-tab="settings"><span>⚙️</span>Опції</button>
 </nav>
 
+<div id="onboard" class="onboard" hidden></div>
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 <input id="restoreFile" type="file" accept=".json,application/json" hidden>
+<input id="photoFile" type="file" accept="image/*" capture="environment" hidden>
+<div id="photoView" class="photo-view" hidden></div>
+<input id="syncFile" type="file" accept=".json,application/json" hidden>
+<input id="bankFile" type="file" accept=".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" hidden>
 
 <script src="xlsx-lite.js"></script>
+<script src="bank-import.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

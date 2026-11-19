@@ -3,7 +3,7 @@
  * Дані користувача сюди НЕ потрапляють — вони лише в localStorage на пристрої.
  * Після оновлення файлів застосунку збільште номер версії нижче.
  */
-var CACHE = 'family-budget-v4';
+var CACHE = 'family-budget-v5';
 var REMIND = 'family-budget-reminders'; // розклад платежів (пише app.js), не видаляємо
 var ASSETS = [
   './',
@@ -11,6 +11,7 @@ var ASSETS = [
   'styles.css',
   'app.js',
   'xlsx-lite.js',
+  'bank-import.js',
   'guide.html',
   'manifest.webmanifest',
   'icons/icon-192.png',
