@@ -44,15 +44,57 @@
     if (!/^-?\d*\.?\d+$/.test(s)) return NaN;
     return parseFloat(s);
   }
+  // Сума з простими діями: «120+45», «3*60», «500-120». Нічого не виконує як код — лише рахує числа.
+  function calcNum(v) {
+    var s = String(v == null ? '' : v).replace(/[\s ]/g, '').replace(/,/g, '.').replace(/[×xх]/gi, '*').replace(/[÷:]/g, '/').replace(/[−–]/g, '-');
+    if (!s || !/^[\d.+\-*/()]+$/.test(s)) return NaN;
+    var i = 0;
+    function num() {
+      var m = /^\d*\.?\d+|^\d+\.?/.exec(s.slice(i));
+      if (!m) throw 0;
+      i += m[0].length; return parseFloat(m[0]);
+    }
+    function factor() {
+      if (s[i] === '-') { i++; return -factor(); }
+      if (s[i] === '(') { i++; var v = expr(); if (s[i] !== ')') throw 0; i++; return v; }
+      return num();
+    }
+    function term() {
+      var v = factor();
+      while (s[i] === '*' || s[i] === '/') { var op = s[i++], r = factor(); v = op === '*' ? v * r : v / r; }
+      return v;
+    }
+    function expr() {
+      var v = term();
+      while (s[i] === '+' || s[i] === '-') { var op = s[i++], r = term(); v = op === '+' ? v + r : v - r; }
+      return v;
+    }
+    try { var r = expr(); return i === s.length && isFinite(r) ? r : NaN; } catch (e) { return NaN; }
+  }
+  function isExpr(v) { return /\d\s*[+\-*/×x−]\s*[\d(]/i.test(String(v || '').replace(/^\s*-/, '')); }
 
   var toastTimer;
-  function toast(msg, bad) {
+  var toastAction = null;
+  // action — необов'язкова кнопка в повідомленні, напр. { label: 'Скасувати', run: fn }
+  function toast(msg, bad, action) {
     var t = $('#toast');
     t.textContent = msg;
-    t.className = 'toast show' + (bad ? ' bad' : '');
+    toastAction = action || null;
+    if (action) {
+      var b = document.createElement('button');
+      b.type = 'button'; b.className = 'toast-btn'; b.textContent = action.label;
+      t.appendChild(b);
+    }
+    t.className = 'toast show' + (bad ? ' bad' : '') + (action ? ' has-act' : '');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { t.className = 'toast'; }, 2600);
+    toastTimer = setTimeout(function () { t.className = 'toast'; toastAction = null; }, action ? 5000 : 2600);
   }
+  document.getElementById('toast').addEventListener('click', function (e) {
+    if (!e.target.closest('.toast-btn') || !toastAction) return;
+    var a = toastAction; toastAction = null;
+    $('#toast').className = 'toast';
+    a.run();
+  });
 
   // ---------------- Дані ----------------
   function defaultData() {
@@ -81,7 +123,7 @@
     add('Інше', 'expense', 'important', []);
     return {
       version: 1,
-      settings: { eurRate: 0, pinHash: '', pinSalt: '', remindDays: 2, lastBackup: 0 },
+      settings: { eurRate: 0, pinHash: '', pinSalt: '', remindDays: 2, lastBackup: 0, theme: 'auto', onboarded: false },
       categories: cats,
       transactions: [],
       goals: [
@@ -99,6 +141,8 @@
   function normalize(d) {
     if (d.settings.remindDays === undefined) d.settings.remindDays = 2;
     if (!d.settings.lastBackup) d.settings.lastBackup = 0;
+    if (!d.settings.theme) d.settings.theme = 'auto';
+    if (d.settings.onboarded === undefined) d.settings.onboarded = d.transactions.length > 0; // хто вже користується — знайомство не показуємо
     if (!Array.isArray(d.recurring)) d.recurring = [];
     if (!d.plans || typeof d.plans !== 'object' || Array.isArray(d.plans)) d.plans = {};
     Object.keys(d.plans).forEach(function (m) {
@@ -139,6 +183,39 @@
 
   // Просимо браузер не видаляти наші дані автоматично
   if (navigator.storage && navigator.storage.persist) { navigator.storage.persist().catch(function () { }); }
+
+  // ---------------- Тема (світла / темна) ----------------
+  function applyTheme() {
+    var th = data.settings.theme, root = document.documentElement;
+    if (th === 'light' || th === 'dark') root.setAttribute('data-theme', th); else root.removeAttribute('data-theme');
+    var dark = th === 'dark' || (th !== 'light' && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches);
+    var m = document.querySelector('meta[name="theme-color"]'); if (m) m.setAttribute('content', dark ? '#1b211e' : '#2f6f4f');
+  }
+  applyTheme();
+  if (window.matchMedia) { var mq = matchMedia('(prefers-color-scheme: dark)'); if (mq.addEventListener) mq.addEventListener('change', applyTheme); }
+
+  // ---------------- Знайомство при першому запуску ----------------
+  var ONBOARD = [
+    { icon: '⚡', title: 'Витрата — за 3 секунди', text: 'Натисніть <b>➕ Додати</b>, впишіть суму й оберіть категорію. Те, що купуєте часто, з\'явиться кнопками — далі записуєте одним дотиком.' },
+    { icon: '📝', title: 'План і нагадування', text: 'У <b>📝 Плані</b> впишіть зарплату й обов\'язкові платежі. Застосунок покаже, скільки лишається на все інше, і нагадає, коли час платити.' },
+    { icon: '🎯', title: 'Ліміти й цілі', text: 'Задайте ліміти на категорії — смужка пожовтіє біля межі. У <b>🎯 Цілях</b> збирайте на відпустку чи ремонт і бачте, коли зберете.' },
+    { icon: '🛡', title: 'Дані тільки у вас', text: 'Без реєстрації і без прив\'язки банку. Усе зберігається <b>лише на цьому телефоні</b>. Раз на тиждень робіть резервну копію — застосунок нагадає.' }
+  ];
+  var onboardStep = 0;
+  function showOnboarding() {
+    var o = $('#onboard'); if (!o) return;
+    var st = ONBOARD[onboardStep], last = onboardStep === ONBOARD.length - 1;
+    o.innerHTML = '<div class="ob-box" role="dialog" aria-modal="true" aria-labelledby="obTitle">' +
+      '<div class="ob-icon">' + st.icon + '</div><h2 id="obTitle">' + st.title + '</h2><p>' + st.text + '</p>' +
+      '<div class="ob-dots">' + ONBOARD.map(function (_, i) { return '<i class="' + (i === onboardStep ? 'on' : '') + '"></i>'; }).join('') + '</div>' +
+      '<button class="btn primary big" data-act="ob-next">' + (last ? 'Почати' : 'Далі') + '</button>' +
+      (last ? '' : '<button class="btn ob-skip" data-act="ob-done">Пропустити</button>') + '</div>';
+    o.hidden = false;
+  }
+  function finishOnboarding() {
+    data.settings.onboarded = true; save();
+    $('#onboard').hidden = true;
+  }
 
   // ---------------- Категорії ----------------
   function catById(id) { for (var i = 0; i < data.categories.length; i++) if (data.categories[i].id === id) return data.categories[i]; return null; }
@@ -615,8 +692,13 @@
       '<button type="button" data-act="type" data-type="income" class="' + (type === 'income' ? 'on in' : '') + '">+ Дохід</button></div>' +
       hint(type === 'expense' ? 'Витрата — коли гроші пішли з гаманця чи картки.' : 'Дохід — коли гроші прийшли: зарплата, премія, подарунок.');
 
-    html += '<label>Сума, ₴<input name="amount" type="text" inputmode="decimal" required placeholder="Напр. 350" value="' + (t ? t.amount : '') + '"></label>' +
-      hint('Тільки цифри, у гривнях. Копійки — через кому: 125,50');
+    if (!t) html += quickPanel(type);
+
+    html += '<label>Сума, ₴<input name="amount" id="txAmount" type="text" inputmode="decimal" required placeholder="Напр. 350" value="' + (t ? t.amount : '') + '"></label>' +
+      '<div class="calc-row" role="group" aria-label="Калькулятор">' +
+      ['+', '−', '×', '÷'].map(function (o) { return '<button type="button" class="calc-btn" data-act="calc-op" data-op="' + o + '">' + o + '</button>'; }).join('') +
+      '<button type="button" class="calc-btn" data-act="calc-eq">=</button><button type="button" class="calc-btn" data-act="calc-clr" aria-label="Стерти">⌫</button></div>' +
+      '<p class="hint calc-res" id="calcRes">Копійки — через кому: 125,50. Кнопки «+ − × ÷» — щоб скласти кілька чеків одразу.</p>';
 
     html += '<label>Категорія<select name="categoryId" required>' + categoryOptions(type, t ? t.categoryId : '') + '</select></label>' +
       hint(type === 'expense'
@@ -638,19 +720,77 @@
     // Останні записи для швидкої перевірки
     if (!t) {
       var last = data.transactions.slice().sort(function (a, b) { return (b.created || 0) - (a.created || 0); }).slice(0, 5);
-      if (last.length) html += '<section class="panel"><h2>Останні записи</h2><ul class="tx-list">' + last.map(txItem).join('') + '</ul>' +
-        hint('Натисніть на запис, щоб виправити або видалити його.') + '</section>';
+      if (last.length) html += '<section class="panel"><h2>Останні записи</h2><ul class="tx-list">' + last.map(function (x) { return txItem(x, true); }).join('') + '</ul>' +
+        hint('Натисніть на запис, щоб виправити або видалити його. Кнопка ↻ — записати те саме ще раз сьогодні.') + '</section>';
     }
     return html;
   }
 
-  function txItem(t) {
+  function txItem(t, repeat) {
     var c = catById(t.categoryId);
     return '<li class="tx" data-act="edit-tx" data-id="' + t.id + '">' +
       '<i class="dot ' + (t.type === 'income' ? 'p-in' : (c ? PRI[c.priority].cls : '')) + '"></i>' +
       '<div class="tx-main"><div class="tx-cat">' + esc(catLabel(t.categoryId)) + '</div>' +
       '<div class="tx-sub">' + fmtDate(t.date) + (t.note ? ' · ' + esc(t.note) : '') + '</div></div>' +
-      '<div class="tx-sum ' + (t.type === 'income' ? 'pos' : 'neg') + '">' + (t.type === 'income' ? '+' : '−') + money(t.amount) + '</div></li>';
+      '<div class="tx-sum ' + (t.type === 'income' ? 'pos' : 'neg') + '">' + (t.type === 'income' ? '+' : '−') + money(t.amount) + '</div>' +
+      (repeat ? '<button class="icon-btn small" data-act="tx-repeat" data-id="' + t.id + '" aria-label="Записати ще раз сьогодні">↻</button>' : '') + '</li>';
+  }
+
+  // ----- Швидке додавання -----
+  // Що людина вносить найчастіше за останні 90 днів: однакова категорія + сума (+ коментар) — «шаблон в один дотик».
+  function quickTemplates(type) {
+    var from = localDay(Date.now() - 90 * 86400000), groups = {}, cats = {};
+    data.transactions.forEach(function (t) {
+      if (t.type !== type || t.date < from || !catById(t.categoryId)) return;
+      var k = t.categoryId + '|' + t.amount + '|' + (t.note || '').toLowerCase();
+      var g = groups[k] || (groups[k] = { categoryId: t.categoryId, amount: t.amount, note: t.note || '', n: 0, last: '' });
+      g.n++; if (t.date > g.last) g.last = t.date;
+      cats[t.categoryId] = (cats[t.categoryId] || 0) + 1;
+    });
+    var tpl = Object.keys(groups).map(function (k) { return groups[k]; }).filter(function (g) { return g.n >= 2; })
+      .sort(function (a, b) { return b.n - a.n || (b.last > a.last ? 1 : -1); }).slice(0, 6);
+    var used = {}; tpl.forEach(function (g) { used[g.categoryId] = 1; });
+    var catChips = Object.keys(cats).filter(function (id) { return !used[id]; })
+      .sort(function (a, b) { return cats[b] - cats[a]; }).slice(0, Math.max(0, 8 - tpl.length));
+    return { tpl: tpl, cats: catChips };
+  }
+
+  function shortCat(id) { var c = catById(id); return c ? c.name : ''; }
+
+  function quickPanel(type) {
+    var q = quickTemplates(type);
+    if (!q.tpl.length && !q.cats.length) return '';
+    var html = '<div class="quick"><div class="quick-t">⚡ ' + (q.tpl.length ? 'Часті ' + (type === 'expense' ? 'витрати' : 'доходи') + ' — один дотик, і записано' : 'Часті категорії') + '</div><div class="chips">';
+    html += q.tpl.map(function (g, i) {
+      return '<button type="button" class="chip" data-act="quick-save" data-i="' + i + '"><b>' + money0(g.amount) + '</b> ' + esc(g.note || shortCat(g.categoryId)) + '</button>';
+    }).join('');
+    html += q.cats.map(function (id) {
+      return '<button type="button" class="chip soft" data-act="quick-cat" data-id="' + id + '">' + esc(shortCat(id)) + '</button>';
+    }).join('');
+    return html + '</div></div>';
+  }
+
+  function quickAdd(src, date) {
+    var t = { id: uid(), created: Date.now(), type: src.type, amount: src.amount, categoryId: src.categoryId, date: date || today(), note: src.note || '' };
+    data.transactions.push(t);
+    var lw = limitToast(t);
+    if (!save()) return;
+    ui.month = t.date.slice(0, 7);
+    render();
+    toast((lw ? lw + ' · ' : '') + '✓ ' + shortCat(t.categoryId) + ' ' + money0(t.amount), !!lw && lw.charAt(0) === '🔴', {
+      label: 'Скасувати', run: function () {
+        data.transactions = data.transactions.filter(function (x) { return x.id !== t.id; });
+        save(); render(); toast('Скасовано');
+      }
+    });
+  }
+
+  function calcShow() {
+    var i = $('#txAmount'), r = $('#calcRes'); if (!i || !r) return;
+    if (!isExpr(i.value)) { r.classList.remove('on'); return; }
+    var v = calcNum(i.value);
+    r.textContent = isNaN(v) ? 'Перевірте приклад: ' + i.value : '= ' + money(v);
+    r.classList.add('on');
   }
 
   // ----- Історія -----
@@ -796,7 +936,13 @@
   // ----- Налаштування -----
   function viewSettings() {
     var s = data.settings;
-    var html = '<section class="panel form"><h2>💶 Курс євро</h2>' +
+    var th = s.theme || 'auto';
+    var html = '<section class="panel"><h2>🎨 Вигляд</h2><div class="seg-ctl seg3" role="group" aria-label="Тема">' +
+      [['auto', '🌓 Як у телефоні'], ['light', '☀️ Світла'], ['dark', '🌙 Темна']].map(function (o) {
+        return '<button type="button" data-act="theme" data-theme="' + o[0] + '" class="' + (th === o[0] ? 'on' : '') + '">' + o[1] + '</button>';
+      }).join('') + '</div>' + hint('«Як у телефоні» — вдень світла, вночі темна, якщо так налаштовано в телефоні.') +
+      '<button class="btn small-btn" data-act="ob-again">👋 Показати знайомство ще раз</button></section>';
+    html += '<section class="panel form"><h2>💶 Курс євро</h2>' +
       '<label>1 € = ? ₴<input id="eurRate" type="text" inputmode="decimal" value="' + (s.eurRate || '') + '" placeholder="Напр. 45,50"></label>' +
       hint('Вписуйте вручну, за яким курсом купуєте євро (з банку чи обмінника). Застосунок сам в інтернет не ходить.') + '</section>';
 
@@ -1000,6 +1146,11 @@
           '<div class="tx-sum">' + money0(x.amount) + '</div></li>';
       }).join('') + '</ul>';
     } else if (!f) html += '<p class="muted">Поки порожньо.</p>';
+    if (kind === 'rec' && list.length) {
+      var mon = list.reduce(function (q, x) { return q + x.amount; }, 0);
+      html += '<p class="year-total">Разом <b>' + money0(mon) + '</b> на місяць — це <b>' + money0(mon * 12) + '</b> на рік.</p>' +
+        hint('Подивіться на підписки (кіно, музика, сервіси): чи всіма ви справді користуєтесь? Одна зайва підписка за 150 ₴ — це 1 800 ₴ на рік.');
+    }
     if (f && !f.id) html += planForm(kind, null);
     else if (!f) html += '<button class="btn primary small-btn" data-act="plan-new" data-kind="' + kind + '">+ Додати</button>';
     return html + '</section>';
@@ -1034,7 +1185,7 @@
 
   function submitPlanForm(f) {
     var name = f.name.value.trim(); if (!name) { toast('Вкажіть назву', true); return; }
-    var amount = parseNum(f.amount.value);
+    var amount = calcNum(f.amount.value);
     if (isNaN(amount) || amount <= 0) { toast('Вкажіть суму цифрами, більше нуля', true); f.amount.focus(); return; }
     var day = f.day.value.trim() === '' ? 0 : parseNum(f.day.value);
     if (isNaN(day) || day < 0 || day > 31 || day !== Math.floor(day)) { toast('Число оплати — від 1 до 31', true); f.day.focus(); return; }
@@ -1101,7 +1252,10 @@
   var VIEWS = { home: viewHome, add: viewAdd, history: viewHistory, plan: viewPlan, goals: viewGoals, settings: viewSettings };
 
   // ---------------- Дії ----------------
-  function go(tab) { ui.tab = tab; ui.goalForm = null; ui.newGoal = false; ui.planForm = null; if (tab !== 'add') ui.editId = null; render(); window.scrollTo(0, 0); }
+  function go(tab) {
+    ui.tab = tab; ui.goalForm = null; ui.newGoal = false; ui.planForm = null; if (tab !== 'add') ui.editId = null; render(); window.scrollTo(0, 0);
+    if (tab === 'add' && !ui.editId) { var a = $('#txAmount'); if (a) a.focus({ preventScroll: true }); }
+  }
 
   document.addEventListener('click', function (e) {
     var tabBtn = e.target.closest('[data-tab]');
@@ -1134,6 +1288,30 @@
       case 'share-json': shareJson(); break;
       case 'plan-income-suggest': setPlanIncome(+el.getAttribute('data-sum') || 0); break;
       case 'go-add': go('add'); break;
+      case 'ob-next': if (onboardStep < ONBOARD.length - 1) { onboardStep++; showOnboarding(); } else finishOnboarding(); break;
+      case 'ob-done': finishOnboarding(); break;
+      case 'ob-again': onboardStep = 0; showOnboarding(); break;
+      case 'theme': data.settings.theme = el.getAttribute('data-theme'); save(); applyTheme(); render(); break;
+      case 'quick-save':
+        var qt = quickTemplates(ui.addType).tpl[+el.getAttribute('data-i')];
+        if (qt) quickAdd({ type: ui.addType, amount: qt.amount, categoryId: qt.categoryId, note: qt.note });
+        break;
+      case 'quick-cat':
+        var qf = $('#txForm'); if (!qf) break;
+        qf.categoryId.value = id; qf.amount.focus();
+        toast('Категорія: ' + shortCat(id) + '. Впишіть суму');
+        break;
+      case 'tx-repeat': var rt = txById(id); if (rt) quickAdd(rt); break;
+      case 'calc-op': case 'calc-eq': case 'calc-clr':
+        var ai = $('#txAmount'); if (!ai) break;
+        if (act === 'calc-clr') ai.value = ai.value.slice(0, -1);
+        else if (act === 'calc-eq') { var cv = calcNum(ai.value); if (isNaN(cv)) toast('Не можу порахувати. Перевірте приклад', true); else ai.value = String(round2(cv)).replace('.', ','); }
+        else {
+          var op = el.getAttribute('data-op');
+          ai.value = ai.value.replace(/[+\-*/×÷−\s]+$/, '') + (ai.value.trim() ? op : '');
+        }
+        calcShow(); ai.focus();
+        break;
       case 'go-settings': go('settings'); break;
       case 'type': ui.addType = el.getAttribute('data-type'); if (!ui.editId) render(); else changeEditType(el.getAttribute('data-type')); break;
       case 'edit-tx': ui.editId = id; ui.tab = 'add'; render(); window.scrollTo(0, 0); break;
@@ -1201,6 +1379,8 @@
     if (f.id === 'lockForm') return unlock();
   });
 
+  document.addEventListener('input', function (e) { if (e.target.id === 'txAmount') calcShow(); });
+
   document.addEventListener('change', function (e) {
     var el = e.target;
     if (el.id === 'histCat') { ui.histCat = el.value; render(); return; }
@@ -1239,8 +1419,8 @@
   });
 
   function submitTx(f) {
-    var amount = parseNum(f.amount.value);
-    if (isNaN(amount) || amount <= 0) { toast('Вкажіть суму цифрами, більше нуля', true); f.amount.focus(); return; }
+    var amount = calcNum(f.amount.value);
+    if (isNaN(amount) || amount <= 0) { toast(isExpr(f.amount.value) ? 'Не можу порахувати суму. Перевірте приклад' : 'Вкажіть суму цифрами, більше нуля', true); f.amount.focus(); return; }
     if (!f.categoryId.value) { toast('Оберіть категорію', true); return; }
     if (!f.date.value) { toast('Вкажіть дату', true); return; }
     var rec = { type: f.type.value, amount: round2(amount), categoryId: f.categoryId.value, date: f.date.value, note: f.note.value.trim() };
@@ -1491,6 +1671,7 @@
   // ---------------- Старт ----------------
   render();
   if (data.settings.pinHash) lock();
+  else if (!data.settings.onboarded) showOnboarding();
   syncReminderSchedule();
   registerBackgroundCheck();
   checkNotifications();
