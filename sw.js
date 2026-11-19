@@ -3,7 +3,7 @@
  * Дані користувача сюди НЕ потрапляють — вони лише в localStorage на пристрої.
  * Після оновлення файлів застосунку збільште номер версії нижче.
  */
-var CACHE = 'family-budget-v2';
+var CACHE = 'family-budget-v3';
 var ASSETS = [
   './',
   'index.html',

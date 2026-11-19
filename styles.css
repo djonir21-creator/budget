@@ -69,7 +69,7 @@ main { padding: 12px 12px 0; max-width: 680px; margin: 0 auto; outline: none; }
 /* Нижнє меню */
 .tabs {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
-  display: grid; grid-template-columns: repeat(5, 1fr);
+  display: grid; grid-template-columns: repeat(6, 1fr);
   background: var(--panel); border-top: 1px solid var(--line);
   padding-bottom: env(safe-area-inset-bottom);
 }
@@ -77,6 +77,7 @@ main { padding: 12px 12px 0; max-width: 680px; margin: 0 auto; outline: none; }
   border: 0; background: none; color: var(--muted); font: inherit; font-size: 11px;
   height: var(--tabs-h); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; cursor: pointer;
 }
+.tabs button { min-width: 0; padding: 0 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tabs button span { font-size: 22px; filter: grayscale(1); opacity: .75; }
 .tabs button.active { color: var(--accent); font-weight: 700; }
 .tabs button.active span { filter: none; opacity: 1; }
@@ -193,6 +194,21 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
 .goal-sub.pos { color: var(--in); font-weight: 700; }
 .goal-sub.neg { color: var(--out); }
 .sub-form { border-top: 1px dashed var(--line); margin-top: 12px; padding-top: 12px; }
+
+/* План на місяць */
+.plan-list .tx { cursor: default; gap: 10px; }
+.plan-list .tx-main { cursor: pointer; }
+.check {
+  flex: none; width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--muted); background: none;
+  color: #fff; font: inherit; font-weight: 700; font-size: 16px; line-height: 1; cursor: pointer; padding: 0;
+}
+.check.on { background: var(--save); border-color: var(--save); }
+.tx.paid .tx-cat { text-decoration: line-through; color: var(--muted); }
+.tx.paid .tx-sum { color: var(--muted); }
+.plan-progress { margin-top: 14px; font-size: 15px; }
+.plan-progress .bar { margin-top: 6px; }
+.plan-fact { margin: 12px 0 0; font-size: 15px; padding: 9px 11px; border-radius: 10px; background: var(--accent-2); }
+.plan-home p { margin: 4px 0; }
 
 /* Категорії */
 .cats { margin-top: 10px; }
