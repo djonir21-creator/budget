@@ -14,7 +14,7 @@
     save: { label: 'Можна економити', short: 'Економія', cls: 'p-save', hint: 'Можна скоротити без шкоди для сім\'ї' }
   };
   var MONTHS = ['Січень', 'Лютий', 'Березень', 'Квітень', 'Травень', 'Червень', 'Липень', 'Серпень', 'Вересень', 'Жовтень', 'Листопад', 'Грудень'];
-  var TITLES = { home: 'Огляд місяця', add: 'Додати запис', history: 'Історія', plan: 'План на місяць', goals: 'Накопичення', settings: 'Налаштування' };
+  var TITLES = { home: 'Огляд місяця', add: 'Додати запис', history: 'Історія', plan: 'План на місяць', goals: 'Накопичення', settings: 'Налаштування', import: 'Імпорт з банку' };
 
   // ---------------- Утиліти ----------------
   function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
@@ -133,7 +133,8 @@
       ],
       contributions: [],
       recurring: [],
-      plans: {}
+      plans: {},
+      rules: {}
     };
   }
 
@@ -142,6 +143,7 @@
     if (d.settings.remindDays === undefined) d.settings.remindDays = 2;
     if (!d.settings.lastBackup) d.settings.lastBackup = 0;
     if (!d.settings.theme) d.settings.theme = 'auto';
+    if (!d.rules || typeof d.rules !== 'object' || Array.isArray(d.rules)) d.rules = {}; // як розкладати операції з виписки банку
     if (d.settings.onboarded === undefined) d.settings.onboarded = d.transactions.length > 0; // хто вже користується — знайомство не показуємо
     if (!Array.isArray(d.recurring)) d.recurring = [];
     if (!d.plans || typeof d.plans !== 'object' || Array.isArray(d.plans)) d.plans = {};
@@ -716,6 +718,7 @@
     if (t) html += '<button class="btn" type="button" data-act="cancel-edit">Скасувати</button>' +
       '<button class="btn danger" type="button" data-act="del-tx" data-id="' + t.id + '">Видалити запис</button>';
     html += '</form>';
+    if (!t) html += '<button class="btn small-btn bank-link" data-act="bank-file">🏦 Завантажити виписку з банку замість ручного вводу</button>';
 
     // Останні записи для швидкої перевірки
     if (!t) {
@@ -983,6 +986,13 @@
           '<button class="btn primary" type="submit">Увімкнути PIN</button></form>') +
       '</section>';
 
+    // Імпорт з банку
+    html += '<section class="panel form"><h2>🏦 Виписка з банку</h2>' +
+      '<p>Не хочете вписувати кожну покупку? Завантажте виписку з банку — застосунок сам розкладе операції по категоріях.</p>' +
+      '<button class="btn primary" data-act="bank-file">📄 Обрати файл виписки</button>' +
+      hint('У застосунку банку (monobank, Приват24 та інші) відкрийте картку → <b>«Виписка»</b>, оберіть період і формат <b>CSV</b> або <b>Excel</b>, збережіть файл на телефон. Потім натисніть кнопку вище.') +
+      hint('Файл читається тут, на телефоні, і нікуди не надсилається. Те, що вже імпортували раніше, повторно не запишеться.') + '</section>';
+
     // Резервні копії
     html += '<section class="panel form"><h2>💾 Резервна копія та Excel</h2>' +
       '<button class="btn primary" data-act="export-xlsx">📗 Зберегти в Excel</button>' +
@@ -1024,6 +1034,194 @@
       '<form class="form inline-add" data-form="sub" data-parent="' + t.id + '" autocomplete="off"><input name="name" type="text" maxlength="40" required placeholder="Нова підкатегорія"><button class="btn" type="submit">+</button></form>' +
       '<button class="btn danger small-btn" data-act="cat-del" data-id="' + t.id + '">Видалити категорію</button>' +
       '</div></details>';
+  }
+
+  // ----- Імпорт виписки з банку -----
+  // Файл читається тут, на телефоні. Категорії підбираються за кодом MCC, назвою магазину
+  // і тим, як ви розклали такі самі операції минулого разу (data.rules).
+  var MCC = [
+    [[5411, 5422, 5441, 5451, 5462, 5499, 5300], ['Продукти', 'Їжа']],
+    [[5812, 5813, 5814], ['Кафе і ресторани', 'Їжа']],
+    [[5541, 5542, 5983, 5172], ['Пальне', 'Транспорт']],
+    [[4121], ['Таксі', 'Транспорт']],
+    [[4111, 4112, 4131, 4789], ['Громадський транспорт', 'Транспорт']],
+    [[7538, 7542, 5533, 5531, 7531, 7534, 7535], ['Ремонт авто', 'Транспорт']],
+    [[5912, 5122], ['Ліки', 'Здоров\'я']],
+    [[8011, 8021, 8031, 8041, 8042, 8043, 8049, 8050, 8062, 8071, 8099], ['Лікарі й аналізи', 'Здоров\'я']],
+    [[4814, 4812, 4816], ['Інтернет і мобільний', 'Комунальні послуги']],
+    [[4900], ['Комунальні послуги']],
+    [[5611, 5621, 5631, 5641, 5651, 5655, 5661, 5691, 5699, 5137, 5139], ['Одяг і взуття']],
+    [[7230, 7298], ['Перукарня', 'Краса й догляд']],
+    [[5977], ['Косметика', 'Краса й догляд']],
+    [[5200, 5211, 5231, 5251, 5261, 5712, 5713, 5714, 5718, 5719, 5722, 5732, 5734, 5311, 5331, 5310, 5399], ['Дім і побут']],
+    [[5815, 5816, 5817, 5818, 4899], ['Підписки (кіно, музика)', 'Розваги та відпочинок']],
+    [[7832, 7841, 7922, 7929, 7991, 7996, 7997, 7998, 7999, 7932, 7933], ['Прогулянки, кіно', 'Розваги та відпочинок']],
+    [[5942, 5943, 5111], ['Книжки і канцтовари', 'Навчання доньки']],
+    [[8211, 8220, 8241, 8244, 8249, 8299, 8351], ['Оплата навчання', 'Навчання доньки']],
+    [[5992, 5947, 5193], ['Подарунки']],
+    [[5945, 5641], ['Для доньки', 'Одяг і взуття']]
+  ];
+  var KEYWORDS = [
+    [/атб|atb|сільпо|silpo|novus|новус|ашан|auchan|metro|метро кеш|varus|варус|фора|fora|наш край|еко ?маркет|велмарт|maudau|лоток|spar|таврія|копійка|рукавичка|близенько/i, ['Продукти', 'Їжа']],
+    [/glovo|глово|bolt food|raketa|ракета|uklon delivery/i, ['Доставка їжі', 'Їжа']],
+    [/mcdonald|макдональдз|kfc|пузата|lviv croissants|aroma|coffee|кава|кав'ярн|кафе|cafe|ресторан|піца|pizza|sushi|суші/i, ['Кафе і ресторани', 'Їжа']],
+    [/wog|okko|окко|socar|upg|klo|брсм|brsm|shell|авіас|amic|татнафта/i, ['Пальне', 'Транспорт']],
+    [/uklon|уклон|bolt|uber/i, ['Таксі', 'Транспорт']],
+    [/аптек|apteka|подорожник|podorozhnyk|анц|ancpharm|бажаємо здоров|d\.s\.|доброго дня|tabletki/i, ['Ліки', 'Здоров\'я']],
+    [/kyivstar|київстар|vodafone|lifecell|лайфсел|воля|volia|тріолан|triolan|укртелеком|datagroup|ланет|lanet/i, ['Інтернет і мобільний', 'Комунальні послуги']],
+    [/обленерго|енерго|yasno|ясно|газопостач|газмереж|газу|naftogaz|нафтогаз|водоканал|теплоенерго|осбб|квартплат/i, ['Комунальні послуги']],
+    [/netflix|spotify|youtube|megogo|мегого|sweet\.tv|kyivstar tv|apple\.com|google|icloud|deezer|divan\.tv|oll\.tv/i, ['Підписки (кіно, музика)', 'Розваги та відпочинок']],
+    [/rozetka|розетка|epicentr|епіцентр|comfy|фокстрот|foxtrot|eldorado|(^|\s)eva(\s|$)|єва|prostor|watsons|jysk|ikea/i, ['Дім і побут']],
+    [/multiplex|планета кіно|planeta kino|кіно/i, ['Прогулянки, кіно', 'Розваги та відпочинок']]
+  ];
+  var TRANSFER_RE = /переказ|переказу|з картки|на картку|зі своєї|поповнення|банка|банку |скарбничк|p2p|transfer|card2card|зняття готівки|банкомат|atm/i;
+  var SALARY_RE = /зарплат|заробітн|salary|зп |аванс/i;
+
+  function findCat(names, type) {
+    for (var i = 0; i < names.length; i++) {
+      var n = names[i].toLowerCase();
+      var c = data.categories.filter(function (x) { return x.type === type && x.name.toLowerCase() === n; })[0];
+      if (c) return c.id;
+    }
+    return '';
+  }
+  function fallbackCat(type) {
+    return findCat(type === 'income' ? ['Інші доходи', 'Інше'] : ['Інше'], type) || ((tops(type)[tops(type).length - 1] || {}).id || '');
+  }
+  function impNorm(desc) {
+    return String(desc || '').toLowerCase().replace(/[0-9*#№_]+/g, ' ').replace(/[^a-zа-яіїєґ' ]+/gi, ' ').replace(/\s+/g, ' ').trim().split(' ').slice(0, 3).join(' ');
+  }
+  function guessCat(desc, mcc, type) {
+    var key = impNorm(desc), r = data.rules[type + ':' + key];
+    if (r && catById(r)) return r;
+    if (type === 'income') return SALARY_RE.test(desc) ? findCat(['Зарплата'], 'income') || fallbackCat('income') : fallbackCat('income');
+    var m = +mcc;
+    if (m) for (var i = 0; i < MCC.length; i++) if (MCC[i][0].indexOf(m) >= 0) { var id = findCat(MCC[i][1], 'expense'); if (id) return id; }
+    for (var k = 0; k < KEYWORDS.length; k++) if (KEYWORDS[k][0].test(desc)) { var id2 = findCat(KEYWORDS[k][1], 'expense'); if (id2) return id2; }
+    return fallbackCat('expense');
+  }
+
+  function impDate(v) {
+    v = String(v || '').trim();
+    var m = /^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2,4})/.exec(v);
+    if (m) { var y = m[3].length === 2 ? '20' + m[3] : m[3]; return y + '-' + pad(+m[2]) + '-' + pad(+m[1]); }
+    m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(v);
+    if (m) return m[1] + '-' + pad(+m[2]) + '-' + pad(+m[3]);
+    return '';
+  }
+  function impAmount(v) {
+    var s = String(v == null ? '' : v).replace(/[\s  ]/g, '').replace(/[^\d,.\-−+]/g, '').replace('−', '-');
+    if (/,\d{1,2}$/.test(s)) s = s.replace(/\./g, '').replace(',', '.'); else s = s.replace(/,/g, '');
+    var n = parseFloat(s);
+    return isNaN(n) ? NaN : n;
+  }
+
+  // Знаходимо рядок із заголовками і потрібні колонки
+  function impDetect(rows) {
+    for (var h = 0; h < Math.min(rows.length, 25); h++) {
+      var r = rows[h].map(function (x) { return String(x).toLowerCase(); });
+      var date = -1, desc = -1, amount = -1, mcc = -1;
+      r.forEach(function (x, i) {
+        if (date < 0 && /дата|date/.test(x)) date = i;
+        if (desc < 0 && /деталі|опис|призначення|description|details|контрагент|отримувач/.test(x)) desc = i;
+        if (/mcc/.test(x)) mcc = i;
+        if (/сума|amount|sum/.test(x) && !/коміс|кешбек|cashback|залишок|комис/.test(x)) {
+          if (amount < 0 || (/картк|card/.test(x) && !/картк|card/.test(r[amount]))) amount = i;
+        }
+      });
+      if (date >= 0 && amount >= 0) {
+        if (desc < 0) desc = r.findIndex(function (x, i) { return i !== date && i !== amount && i !== mcc && x; });
+        return { header: h, date: date, desc: desc, amount: amount, mcc: mcc };
+      }
+    }
+    return { header: -1, date: 0, desc: 1, amount: 2, mcc: -1 };
+  }
+
+  function impBuild(raw, map, fileName) {
+    var exist = {}, manual = {};
+    data.transactions.forEach(function (t) {
+      if (t.importKey) exist[t.importKey] = 1;
+      else manual[t.date + '|' + t.type + '|' + t.amount] = 1;
+    });
+    var rows = [], seen = {};
+    raw.slice(map.header + 1).forEach(function (r) {
+      var date = impDate(r[map.date]), amt = impAmount(r[map.amount]);
+      if (!date || isNaN(amt) || amt === 0) return;
+      var desc = map.desc >= 0 ? String(r[map.desc] || '') : '', mcc = map.mcc >= 0 ? r[map.mcc] : '';
+      var type = amt < 0 ? 'expense' : 'income', amount = round2(Math.abs(amt));
+      var key = date + '|' + type + '|' + amount + '|' + impNorm(desc);
+      var k2 = key; while (seen[k2]) k2 += '+'; seen[k2] = 1; // дві однакові кави за день — це дві різні операції
+      var flag = exist[k2] ? 'dup' : manual[date + '|' + type + '|' + amount] ? 'maybe' : (TRANSFER_RE.test(desc) || /^(4829|6011|6012|6538|6540)$/.test(String(mcc))) ? 'transfer' : '';
+      rows.push({ date: date, desc: desc, mcc: mcc, type: type, amount: amount, key: k2, flag: flag, on: !flag, categoryId: guessCat(desc, mcc, type) });
+    });
+    rows.sort(function (a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : 0; });
+    ui.imp = { raw: raw, map: map, rows: rows, file: fileName };
+  }
+
+  function startImport(file) {
+    if (!window.BankImport) { toast('Не вдалося завантажити модуль імпорту. Оновіть сторінку.', true); return; }
+    toast('Читаю файл…');
+    BankImport.read(file).then(function (raw) {
+      if (!raw.length) throw new Error('empty');
+      var map = impDetect(raw);
+      impBuild(raw, map, file.name);
+      if (!ui.imp.rows.length) { toast('У файлі не знайшлося операцій. Перевірте колонки нижче.', true); }
+      ui.tab = 'import'; render(); window.scrollTo(0, 0);
+    }).catch(function (e) {
+      var m = e && e.message;
+      toast(m === 'pdf' ? 'Це PDF. Збережіть виписку у форматі Excel або CSV' : m === 'old-xls' ? 'Старий формат .xls не підтримується. Оберіть у банку CSV або xlsx'
+        : m === 'no-inflate' ? 'Цей браузер не відкриває Excel. Оберіть у банку формат CSV' : 'Не вдалося прочитати файл. Спробуйте формат CSV', true);
+    });
+  }
+
+  function viewImport() {
+    var im = ui.imp;
+    if (!im) { ui.tab = 'settings'; return viewSettings(); }
+    var rows = im.rows, on = rows.filter(function (r) { return r.on; });
+    var sumOut = on.reduce(function (q, r) { return r.type === 'expense' ? q + r.amount : q; }, 0), sumIn = on.reduce(function (q, r) { return r.type === 'income' ? q + r.amount : q; }, 0);
+    var nDup = rows.filter(function (r) { return r.flag === 'dup'; }).length, nMaybe = rows.filter(function (r) { return r.flag === 'maybe'; }).length, nTr = rows.filter(function (r) { return r.flag === 'transfer'; }).length;
+    var html = '<section class="panel"><h2>🏦 Виписка: ' + esc(im.file) + '</h2>';
+    if (rows.length) html += '<p>Знайдено операцій: <b>' + rows.length + '</b>' + (rows.length ? ' (з ' + fmtDate(rows[rows.length - 1].date) + ' по ' + fmtDate(rows[0].date) + ')' : '') + '.</p>';
+    if (nDup) html += '<p class="note">⏭ ' + nDup + ' вже імпортовано раніше — їх вимкнено.</p>';
+    if (nMaybe) html += '<p class="note">✋ ' + nMaybe + ' схожі на записи, які ви вже внесли вручну (та сама дата й сума) — їх вимкнено, щоб не було двічі.</p>';
+    if (nTr) html += '<p class="note">🔁 ' + nTr + ' схожі на перекази між картками чи зняття готівки — їх вимкнено, бо це не витрати.</p>';
+    html += hint('Перевірте категорії. Вимкніть галочку там, що не треба записувати. Застосунок <b>запам\'ятає</b> ваш вибір і наступного разу розкладе такі операції сам.');
+    var cols = (im.raw[im.map.header] || im.raw[0] || []).map(function (h, i) { return '<option value="' + i + '">' + esc(h || ('Колонка ' + (i + 1))) + '</option>'; }).join('');
+    function colSel(k, label) {
+      return '<label>' + label + '<select data-imp-map="' + k + '"><option value="-1">—</option>' + cols.replace('value="' + im.map[k] + '"', 'value="' + im.map[k] + '" selected') + '</select></label>';
+    }
+    html += '<details class="imp-map"><summary>Колонки файлу (якщо щось розпізнано неправильно)</summary><div class="form">' +
+      colSel('date', 'Дата') + colSel('desc', 'Опис операції') + colSel('amount', 'Сума (мінус — витрата)') + colSel('mcc', 'Код MCC (якщо є)') + '</div></details></section>';
+
+    if (rows.length) {
+      var optE = categoryOptions('expense', ''), optI = categoryOptions('income', '');
+      html += '<section class="panel"><div class="imp-bar"><button class="btn small" data-act="imp-all" data-on="1">Усі</button><button class="btn small" data-act="imp-all" data-on="0">Жодної</button><button class="btn small imp-cancel" data-act="imp-cancel">Скасувати</button></div>' +
+        '<ul class="tx-list imp-list">' + rows.map(function (r, i) {
+          var opts = (r.type === 'income' ? optI : optE).replace('value="' + r.categoryId + '"', 'value="' + r.categoryId + '" selected');
+          return '<li class="imp-row' + (r.on ? '' : ' off') + '"><label class="imp-check"><input type="checkbox" data-imp-on="' + i + '"' + (r.on ? ' checked' : '') + ' aria-label="Записати"></label>' +
+            '<div class="tx-main"><div class="imp-top"><span class="tx-cat">' + esc(r.desc || '—') + '</span><span class="tx-sum ' + (r.type === 'income' ? 'pos' : 'neg') + '">' + (r.type === 'income' ? '+' : '−') + money(r.amount) + '</span></div>' +
+            '<div class="tx-sub">' + fmtDate(r.date) + (r.flag === 'dup' ? ' · вже є' : r.flag === 'maybe' ? ' · можливо, вже внесено' : r.flag === 'transfer' ? ' · схоже на переказ' : '') + '</div>' +
+            '<select data-imp-cat="' + i + '" aria-label="Категорія">' + opts + '</select></div></li>';
+        }).join('') + '</ul></section>';
+    }
+    html += '<div class="imp-foot"><button class="btn primary big" data-act="imp-do"' + (on.length ? '' : ' disabled') + '>Записати ' + on.length + ' операцій</button>' +
+      (on.length ? '<p class="hint">Витрати: <b class="neg">' + money0(sumOut) + '</b> · Доходи: <b class="pos">' + money0(sumIn) + '</b></p>' : '') + '</div>';
+    return html;
+  }
+
+  function doImport() {
+    var im = ui.imp; if (!im) return;
+    var n = 0, now = Date.now();
+    im.rows.forEach(function (r) {
+      data.rules[r.type + ':' + impNorm(r.desc)] = r.categoryId; // запам'ятовуємо вибір і для вимкнених рядків
+      if (!r.on || !catById(r.categoryId)) return;
+      data.transactions.push({ id: uid(), created: now + n, type: r.type, amount: r.amount, categoryId: r.categoryId, date: r.date, note: r.desc.slice(0, 120), importKey: r.key });
+      n++;
+    });
+    if (!save()) return;
+    var last = im.rows.filter(function (r) { return r.on; })[0];
+    ui.imp = null; if (last) ui.month = last.date.slice(0, 7);
+    toast('Записано операцій: ' + n + ' ✓'); go('home');
   }
 
   // ----- План на місяць -----
@@ -1249,7 +1447,7 @@
       '<button class="btn" data-act="go-plan" data-month="' + next + '">План на ' + monthLabel(next).toLowerCase().split(' ')[0] + '</button></div></section>';
   }
 
-  var VIEWS = { home: viewHome, add: viewAdd, history: viewHistory, plan: viewPlan, goals: viewGoals, settings: viewSettings };
+  var VIEWS = { home: viewHome, add: viewAdd, history: viewHistory, plan: viewPlan, goals: viewGoals, settings: viewSettings, import: viewImport };
 
   // ---------------- Дії ----------------
   function go(tab) {
@@ -1288,6 +1486,10 @@
       case 'share-json': shareJson(); break;
       case 'plan-income-suggest': setPlanIncome(+el.getAttribute('data-sum') || 0); break;
       case 'go-add': go('add'); break;
+      case 'bank-file': $('#bankFile').value = ''; $('#bankFile').click(); break;
+      case 'imp-do': doImport(); break;
+      case 'imp-cancel': ui.imp = null; go('settings'); break;
+      case 'imp-all': if (ui.imp) { var on = el.getAttribute('data-on') === '1'; ui.imp.rows.forEach(function (r) { r.on = on; }); render(); } break;
       case 'ob-next': if (onboardStep < ONBOARD.length - 1) { onboardStep++; showOnboarding(); } else finishOnboarding(); break;
       case 'ob-done': finishOnboarding(); break;
       case 'ob-again': onboardStep = 0; showOnboarding(); break;
@@ -1400,6 +1602,24 @@
       data.settings.eurRate = r; save(); toast('Курс збережено'); return;
     }
     if (el.id === 'restoreFile') { if (el.files && el.files[0]) importJson(el.files[0]); return; }
+    if (el.id === 'bankFile') { if (el.files && el.files[0]) startImport(el.files[0]); return; }
+    if (ui.imp && el.hasAttribute('data-imp-on')) {
+      var ir = ui.imp.rows[+el.getAttribute('data-imp-on')]; if (ir) ir.on = el.checked;
+      var y = window.scrollY; render(); window.scrollTo(0, y); return;
+    }
+    if (ui.imp && el.hasAttribute('data-imp-cat')) {
+      var rr = ui.imp.rows[+el.getAttribute('data-imp-cat')]; if (!rr) return;
+      rr.categoryId = el.value;
+      // такі самі операції (той самий магазин) — у ту саму категорію
+      var nk = impNorm(rr.desc), same = 0;
+      ui.imp.rows.forEach(function (o) { if (o !== rr && o.type === rr.type && impNorm(o.desc) === nk && nk) { o.categoryId = el.value; same++; } });
+      if (same) { var y2 = window.scrollY; render(); window.scrollTo(0, y2); toast('Ще ' + same + ' таких самих операцій перенесено в цю категорію'); }
+      return;
+    }
+    if (ui.imp && el.hasAttribute('data-imp-map')) {
+      ui.imp.map[el.getAttribute('data-imp-map')] = +el.value;
+      impBuild(ui.imp.raw, ui.imp.map, ui.imp.file); render(); return;
+    }
     var field = el.getAttribute('data-cat-field');
     if (field) {
       var c = catById(el.getAttribute('data-id')); if (!c) return;

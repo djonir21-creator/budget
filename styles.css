@@ -333,3 +333,23 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
 .ob-dots i { width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
 .ob-dots i.on { background: var(--accent); width: 20px; border-radius: 4px; }
 .ob-skip { width: 100%; border: 0; background: none; color: var(--muted); margin-top: 4px; }
+
+/* Імпорт виписки */
+.bank-link { margin-top: -4px; margin-bottom: 12px; }
+.imp-map summary { cursor: pointer; color: var(--muted); font-size: 14px; margin-top: 10px; }
+.imp-bar { display: flex; gap: 8px; }
+.imp-bar .btn { margin-top: 0; min-height: 38px; padding: 6px 14px; font-size: 14px; }
+.imp-list { margin-top: 8px; }
+.imp-row { display: flex; gap: 8px; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.imp-row:last-child { border-bottom: 0; }
+.imp-row.off .tx-main { opacity: .5; }
+.imp-check { padding-top: 2px; }
+.imp-check input { width: 22px; height: 22px; accent-color: var(--accent); }
+.imp-top { display: flex; justify-content: space-between; gap: 8px; }
+.imp-top .tx-cat { white-space: normal; font-size: 14px; }
+.imp-row select { margin-top: 6px; min-height: 40px; padding: 7px 30px 7px 10px; font-size: 15px; }
+.imp-foot { position: sticky; bottom: calc(var(--tabs-h) + env(safe-area-inset-bottom)); background: var(--bg); padding: 4px 0 8px; }
+.imp-foot .btn.big { margin-top: 4px; }
+.imp-foot .btn[disabled] { opacity: .5; }
+.imp-foot .hint { text-align: center; }
+.imp-bar .imp-cancel { margin-left: auto; }

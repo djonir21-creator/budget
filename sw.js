@@ -11,6 +11,7 @@ var ASSETS = [
   'styles.css',
   'app.js',
   'xlsx-lite.js',
+  'bank-import.js',
   'guide.html',
   'manifest.webmanifest',
   'icons/icon-192.png',
